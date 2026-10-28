@@ -147,3 +147,44 @@ def _decode_historian_value(text):
             return float(text)
         except (TypeError, ValueError):
             return text
+
+
+SIGNAL_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal_time', 'neighbor_id', 'neighbor_name',
+                  'market_id', 'market_name', 'market_series', 'curve_id', 'record_time', 'interval_id',
+                  'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty']
+
+
+def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool = False) -> pd.DataFrame:
+    """Transactive signals (sent and received) as one row per vertex, with neighbor, market, direction, signal time."""
+    reader = source.reader
+    if not source.reader.has_table('transactive_signal'):
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    sig, meas, comp = reader.tables['transactive_signal'], reader.tables['measurement'], reader.tables['component']
+    statement = (select(sig.c.id.label('signal_id'), sig.c.direction, sig.c.signal_time, sig.c.market_id,
+                        meas.c.source_id.label('neighbor_id'), comp.c.name.label('neighbor_name'), comp.c.tn_id)
+                 .join(meas, meas.c.id == sig.c.id).join(comp, comp.c.id == meas.c.source_id, isouter=True))
+    if neighbors:
+        statement = statement.where(comp.c.name.in_(list(neighbors)))
+    headers = pd.DataFrame(reader.execute(statement))
+    if headers.empty:
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    curves = reader.curves(measurement_ids=list(headers['signal_id']), latest_only=not history)
+    records = []
+    for curve in curves:
+        for v in curve['vertices']:
+            records.append({'signal_id': curve['measurement_id'], 'curve_id': curve['id'],
+                            'record_time': curve['record_time'], 'interval_id': curve['time_interval_id'],
+                            'interval_start': curve['interval_start'], 'record': v['record'], 'price': v['price'],
+                            'quantity': v['quantity'], 'cost': v['cost'], 'continuity': v['continuity'],
+                            'uncertainty': v['uncertainty']})
+    if not records:
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    df = pd.DataFrame(records).merge(headers, on='signal_id', how='left')
+    catalog = source.catalog
+    markets = catalog.markets[['id', 'name', 'series_name']].rename(
+        columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series'})
+    df = df.merge(markets, on='market_id', how='left').rename(columns={'tn_id': 'run_id'})
+    df['source'] = source.label
+    df['actor'] = df['run_id'].map(catalog.run_label)
+    return df[SIGNAL_COLUMNS].sort_values(['neighbor_name', 'interval_start', 'direction', 'record_time', 'record']) \
+        .reset_index(drop=True)

@@ -45,7 +45,7 @@ class Theme:
         ink = self.ink
         axis = dict(showgrid=True, gridcolor=ink['grid'], gridwidth=1, zeroline=False, linecolor=ink['axis'],
                     linewidth=1, ticks='outside', tickcolor=ink['axis'], tickfont=dict(color=ink['muted'], size=11),
-                    title=dict(font=dict(color=ink['secondary'], size=12)), showline=True)
+                    title=dict(font=dict(color=ink['secondary'], size=12)), showline=True, automargin=True)
         return go.layout.Template(layout=go.Layout(
             paper_bgcolor=ink['page'], plot_bgcolor=ink['surface'],
             font=dict(family=FONT, color=ink['primary'], size=12),

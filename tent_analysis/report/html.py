@@ -12,25 +12,13 @@ from tent_analysis.viz import Theme, color_map, price_timeline, power_timeline, 
 
 
 def standard_figures(source: Source, theme: Theme | None = None) -> dict[str, go.Figure]:
-    """Price timeline (with revision band), power timeline, and cost bars by hour, weekday, and month."""
-    theme = theme or Theme()
-    latest = load_measurements(source, types=['MarginalPrice', 'ScheduledPower'])
-    history = load_measurements(source, types=['MarginalPrice'], history=True)
-    prices = cleared_prices(latest)
-    power = scheduled_power(latest)
+    """Every figure family the archive can support: overview, curves, negotiation, markets, signals, bid position,
+    costs, devices. Built through the dashboard views so report and dashboard always agree."""
+    from tent_analysis.app.views import Selection, Views
+    views = Views(source, Selection(mode=(theme or Theme()).mode))
     figures: dict[str, go.Figure] = {}
-    if not prices.empty:
-        figures['Cleared price'] = price_timeline(prices, revisions=price_revisions(history), theme=theme)
-    if not power.empty:
-        meters = load_meter_readings(source)
-        figures['Scheduled power'] = power_timeline(power, net=net_power(power),
-                                                    meters=meters if not meters.empty else None,
-                                                    colors=color_map(power['owner_name'], theme), theme=theme)
-    cost = energy_cost(power, prices)
-    for by in ('hour', 'weekday', 'month'):
-        agg = aggregate_cost(cost, by)
-        if not agg.empty and agg[by].nunique() > 1:
-            figures[f'Cost by {by}'] = cost_bars(agg, by, theme=theme)
+    for page in ('overview', 'curves', 'negotiation', 'markets', 'signals', 'bids', 'costs', 'devices'):
+        figures.update(getattr(views, page)())
     return figures
 
 

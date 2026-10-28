@@ -63,6 +63,16 @@ def report(args) -> int:
     return 0
 
 
+def dashboard(args) -> int:
+    """Launch the Streamlit dashboard on the given archives."""
+    import os
+    import subprocess
+    from pathlib import Path as _P
+    script = _P(__file__).resolve().parent.parent / 'app' / 'dashboard.py'
+    env = dict(os.environ, TENT_ANALYSIS_URLS=';'.join(args.urls))
+    return subprocess.call([sys.executable, '-m', 'streamlit', 'run', str(script), '--', *args.urls], env=env)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog='tent-analysis', description='Analyse and visualise TENT archives.')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -77,6 +87,9 @@ def main(argv=None) -> int:
         if name == 'report':
             p.add_argument('--out', required=True, help='HTML file to write')
             p.add_argument('--mode', choices=['light', 'dark'], default='light')
+    d = sub.add_parser('dashboard', help='Open the Streamlit dashboard on one or more archives')
+    d.add_argument('urls', nargs='+')
+    d.set_defaults(func=dashboard)
     args = parser.parse_args(argv)
     return args.func(args)
 

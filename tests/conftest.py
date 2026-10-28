@@ -56,6 +56,27 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1)
     ti = market.time_intervals[0]
     asset.active_vertices.update(ti, [Vertex(price=0.02, quantity=-60.0), Vertex(price=0.08, quantity=-20.0)])
     asset.active_vertices.update(ti, [Vertex(price=0.03, quantity=-55.0), Vertex(price=0.09, quantity=-15.0)])
+    # Phase 2 data: a system curve per interval, consensus flags, and sent/received signals for one neighbor.
+    for ti in market.time_intervals[:6]:
+        market.active_vertices.update(ti, [Vertex(price=0.02, quantity=-80.0), Vertex(price=0.06, quantity=0.0),
+                                           Vertex(price=0.10, quantity=90.0)])
+    transactive = [n for n in tn.neighbors if n.transactive]
+    for ti in market.time_intervals:
+        for n in transactive:
+            n.convergence_flags.update(ti, ti is not market.time_intervals[1])
+    market.converged = True
+    market.record_consensus()
+    if transactive:
+        from tent.containers.transactive_signal import TransactiveSignal
+        neighbor = transactive[0]
+        sent = TransactiveSignal(market=market, neighbor=neighbor, direction='sent', signal_time=Timer.now())
+        received = TransactiveSignal(market=market, neighbor=neighbor, direction='received',
+                                     signal_time=Timer.now() + timedelta(seconds=30))
+        for ti in market.time_intervals[:4]:
+            sent.update(ti, [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)], archive=False)
+            received.update(ti, [Vertex(price=0.03, quantity=-45.0), Vertex(price=0.09, quantity=36.0)], archive=False)
+        sent.archive()
+        received.archive()
     if tn.meter_points:
         meter = tn.meter_points[0]
         t0 = Timer.now()
