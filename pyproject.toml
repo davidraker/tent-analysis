@@ -1,0 +1,43 @@
+[project]
+name = "tent-analysis"
+version = "0.1.0"
+description = "Analysis and visualisation tool for TENT (Transactive Energy Network Template) archives"
+authors = [{ name = "Pacific Northwest National Laboratory" }]
+requires-python = ">=3.11"
+dependencies = [
+    "tent>=3.0",            # install from ../TENT (pip install -e ../TENT) until TENT is published
+    "pandas>=2.0",
+    "plotly>=5.18",
+    "SQLAlchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+export = ["kaleido>=1.0"]          # static PNG/PDF export of figures (needs a Chrome/Chromium; see plotly.io.get_chrome)
+postgres = ["psycopg[binary]>=3.1"]
+app = ["streamlit>=1.30"]          # Phase 2 dashboard
+
+[project.scripts]
+tent-analysis = "tent_analysis.report.cli:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64"]
+
+[tool.pixi.dependencies]
+python = ">=3.11"
+pandas = ">=2.0"
+plotly = ">=5.18"
+sqlalchemy = ">=2.0"
+pytest = ">=7.4"
+
+[tool.pixi.pypi-dependencies]
+tent = { path = "../TENT", editable = true }
+tent-analysis = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+test = "pytest tests -v"
