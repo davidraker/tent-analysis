@@ -168,6 +168,7 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
     headers = pd.DataFrame(reader.execute(statement))
     if headers.empty:
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    headers['direction'] = headers['direction'].map(_enum_name)  # SignalDirection member -> 'sent' / 'received'
     curves = reader.curves(measurement_ids=list(headers['signal_id']), latest_only=not history)
     records = []
     for curve in curves:

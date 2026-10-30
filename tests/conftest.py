@@ -37,6 +37,18 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1)
     tn.configure_node(configs)
     for _ in range(2):
         tn.step()
+    # Full consensus is recorded only by a ConsensusMarket, so the archive gets one consensus series alongside the
+    # auctions, with the same timing as the first auction series. It is never stepped; the fixture writes its data.
+    from tent.enumerations import MarketState
+    from tent.market.consensus_market import ConsensusMarket
+    from tent.market.market_series import MarketSeries
+    auction = tn.market_series[0]
+    tn.market_series.append(MarketSeries(transactive_node=tn, name='Consensus_Market', market_class=ConsensusMarket,
+                                         initial_market_state=MarketState.Negotiation,
+                                         duration_negotiation=auction.duration.negotiation.total_seconds(),
+                                         duration_delivery_lead=auction.duration.delivery_lead.total_seconds(),
+                                         interval_duration=auction.duration.market_interval.total_seconds(),
+                                         intervals_to_clear=auction.intervals_to_clear))
     entities = list(tn.local_assets) + list(tn.neighbors)
     for series in tn.market_series:
         for market in series:
@@ -61,16 +73,18 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1)
         market.active_vertices.update(ti, [Vertex(price=0.02, quantity=-80.0), Vertex(price=0.06, quantity=0.0),
                                            Vertex(price=0.10, quantity=90.0)])
     transactive = [n for n in tn.neighbors if n.transactive]
-    for ti in market.time_intervals:
+    consensus_market = tn.market_series[-1].newest_market
+    for ti in consensus_market.time_intervals:
         for n in transactive:
-            n.convergence_flags.update(ti, ti is not market.time_intervals[1])
-    market.converged = True
-    market.record_consensus()
+            n.convergence_flags.update(ti, ti is not consensus_market.time_intervals[1])
+    consensus_market.converged = True
+    consensus_market.record_consensus()
     if transactive:
         from tent.containers.transactive_signal import TransactiveSignal
+        from tent.enumerations import SignalDirection
         neighbor = transactive[0]
-        sent = TransactiveSignal(market=market, neighbor=neighbor, direction='sent', signal_time=Timer.now())
-        received = TransactiveSignal(market=market, neighbor=neighbor, direction='received',
+        sent = TransactiveSignal(market=market, neighbor=neighbor, direction=SignalDirection.sent, signal_time=Timer.now())
+        received = TransactiveSignal(market=market, neighbor=neighbor, direction=SignalDirection.received,
                                      signal_time=Timer.now() + timedelta(seconds=30))
         for ti in market.time_intervals[:4]:
             sent.update(ti, [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)], archive=False)
