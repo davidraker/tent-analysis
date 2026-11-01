@@ -109,6 +109,10 @@ def test_device_panel_groups_points_by_device():
     assert len(fig.data) == 4 and {t.name for t in fig.data} == {'campus/HP1', 'campus/HP2'}
     assert [a.text for a in fig.layout.annotations] == ['<b>Power</b>', '<b>ZoneTemperature</b>']
     assert sum(t.showlegend for t in fig.data) == 2, 'one legend entry per device'
+    many = pd.DataFrame([{'source': 's', 'topic': f'campus/HP{i}/Power', 'ts': t[0], 'value': 1.0} for i in range(9)])
+    crowded = device_panel(many)
+    assert crowded.layout.showlegend is False and crowded.layout.title.text == 'Device points; 9 devices, hover for names'
+    assert fig.layout.showlegend is True
     with pytest.raises(ValueError, match='exceed max_rows'):
         device_panel(topics, max_rows=1)
     with pytest.raises(ValueError, match='non-numeric'):

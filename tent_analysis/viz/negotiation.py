@@ -155,6 +155,10 @@ def device_panel(topics: pd.DataFrame, theme: Theme | None = None, title: str = 
                                      hovertemplate='%{y}<extra>' + text(device) + '/' + text(point) + '</extra>'), row=i, col=1)
             shown.add(device)
     fig.update_xaxes(title_text=time_axis('Time', topics['ts']), row=len(points), col=1)
+    # Beyond the palette every device is "Other" grey and a legend would only list names; hover still names the device.
+    legend = 1 < len(devices) <= len(theme.categorical)
+    if len(devices) > len(theme.categorical):
+        title = f'{title}; {len(devices)} devices, hover for names'
     theme.apply(fig, title=title, height=max(300, 150 * len(points) + 100))
-    fig.update_layout(showlegend=len(devices) > 1, hovermode='closest')
+    fig.update_layout(showlegend=legend, hovermode='closest')
     return fig
