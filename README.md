@@ -8,8 +8,9 @@ or without a VOLTTRON SQL historian (`topics`/`data`) in the same database.
     pip install -e ../TENT -e ".[dev]"
 
 Extras: `export` (Kaleido, for `report --format png|pdf`; needs a Chrome or Chromium, see `plotly.io.get_chrome`),
-`parquet` (pyarrow, for `export --out file.parquet`), `postgres` (psycopg), `app` (Streamlit, for `dashboard`).
-`dev` includes pytest and the three optional runtime dependencies so the whole test suite runs.
+`parquet` (pyarrow, for `export --out file.parquet`), `postgres` (psycopg), `app` (Streamlit, for `dashboard`),
+`config` (jsonschema, for `tent-config` and the dashboard's Configuration mode). `dev` includes pytest and the
+optional runtime dependencies so the whole test suite runs.
 
 ## Command line
 
@@ -78,6 +79,51 @@ Conventions the frames follow:
 - Historian topics are drawn one panel per point name (the topic's last path segment) with one line per device;
   topics whose values are not numeric are left out and counted in the figure title.
 
+## Configuration tool
+
+`tent-config` (extra `config`, which adds jsonschema) works on the node configuration files that
+`TransactiveNode.configure_node` consumes, through TENT's configuration models (`tent.config`) and the JSON Schema TENT
+builds from them (`tent.registry.configuration_schema`). The same logic drives the dashboard's Configuration mode.
+
+    tent-config schema   [--out tent-node.schema.json]
+    tent-config validate FILE [--construct] [--base-dir DIR]
+    tent-config diff     OLD NEW
+    tent-config template [SLOT CLASS] [--market-class-name CLASS] [--no-doc] [--out FILE] [--list-classes]
+    tent-config migrate  FILE [--out FILE]
+
+- `schema` writes TENT's JSON Schema (draft 2020-12) of a whole node configuration, for editors and other tools.
+- `validate` checks a file at three levels and prints `[level] path: message` lines. Structure: the schema, entry by
+  entry, nested blocks (price model, managers, model-frame models) against their own class's variant. Semantics: the
+  models themselves (`TransactiveNode.validate_configuration`, component by component) in their own words: duplicate
+  names, zones, aware datetimes, enumeration names. Construction (`--construct`): a node is built with a
+  `NullDataManager`; when the build fails, entries are added one at a time to attribute the failure (a name reference
+  that matches nothing, a weather file that does not exist) to the entry whose addition breaks it. Relative paths in
+  the file resolve against `--base-dir` (default: the working directory, as for a node). Construction runs only when
+  the first two levels pass. A class from a package that is not installed here (the VOLTTRON agent's data manager,
+  meter points and actuation managers) is reported as `[unchecked]`, not as a problem. Exit status 1 when there are
+  problems.
+- `diff` compares two configurations structurally, components matched by list and name, and classifies every change
+  as `[in place]` (a running node takes it through `reconfigure`) or `[rebuild]` by the reconfigurable markers of the
+  models: node settings, the data manager, components added or removed, class changes, market timing, model-frame
+  membership and `demand_curve_points` rebuild; costs, limits, thresholds, loss factors, schedules and a model-frame
+  asset's occupancy manager block do not. Numeric tables are summarised (`24 values, 1 differ`). Exit status 0 when
+  every change is in place, 2 when the node must be rebuilt.
+- `template` writes a new entry for a registered class (`tent-config template Neighbor BulkSupplierDC`,
+  `tent-config template MarketSeries MarketSeries --market-class-name MatchingEngine`, or the whole node without
+  arguments): every field at its default, required fields without a default as `null`, and the field descriptions
+  (type, bounds, unit, default, whether reconfigurable) under the key `_doc`. JSON has no comments, so `_doc` is the
+  documentation form; `validate`, `diff` and `migrate` strip it (`strip_docs`) before checking, and TENT itself does
+  not accept it, so strip it before handing a file to a node. `--list-classes` lists the registered classes per slot.
+- `migrate` rewrites the legacy spellings the models identify: the camelCase lists (`meterPoints`, `localAssets`,
+  `markets`, `neighbours`, ...), `model_type` to `class_name`, `db_type` dropped from `db_params`, a
+  `TemperatureForecastModel` location given as `""` made `null`. It then reports, in the models' words, what the file
+  still gets wrong (an unknown key is named with the keys the class accepts). Exit status 1 when problems remain.
+
+The dashboard's Configuration mode (sidebar, Mode) uploads a file or starts from the node template, edits one
+component at a time in a form generated from the schema (bounds, enumerations, units and reconfigurability from the
+field's schema; complex fields as JSON), shows the three-level validation of the whole file and the changes made in
+the session with their classification, and downloads the result.
+
 ## Tests
 
     pytest tests -q
@@ -85,4 +131,6 @@ Conventions the frames follow:
 The fixtures build archives by driving TENT objects (`tests/conftest.py`): two auction series, a consensus series,
 a MatchingEngine series with one negotiation pass of orders, signals and meter readings; one archive configured in
 `America/Los_Angeles` without an order book; and one with historian tables. The loaders, metrics, figures, report, CLI
-and dashboard logic are exercised against real TENT output.
+and dashboard logic are exercised against real TENT output. The configuration tool is tested against TENT's sample
+configuration, the configurations deployed in `containers/tent/*/agent_configs`, a template per registered class, and
+a legacy-spelled file; the Configuration mode of the dashboard runs headless through Streamlit's AppTest.

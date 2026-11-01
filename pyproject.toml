@@ -12,7 +12,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "kaleido>=1.0", "pyarrow>=14", "streamlit>=1.30"]
+dev = ["pytest>=7.4", "kaleido>=1.0", "pyarrow>=14", "streamlit>=1.30", "jsonschema>=4.18"]
+config = ["jsonschema>=4.18"]      # `tent-config` and the dashboard's Configuration mode
 export = ["kaleido>=1.0"]          # `report --format png|pdf` (needs a Chrome/Chromium; see plotly.io.get_chrome)
 parquet = ["pyarrow>=14"]          # `export --out file.parquet`
 postgres = ["psycopg[binary]>=3.1"]
@@ -20,6 +21,7 @@ app = ["streamlit>=1.30"]          # `dashboard`
 
 [project.scripts]
 tent-analysis = "tent_analysis.report.cli:main"
+tent-config = "tent_analysis.config.cli:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]

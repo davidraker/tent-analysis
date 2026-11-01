@@ -1,7 +1,8 @@
 """
 Streamlit dashboard: `tent-analysis dashboard <url> [<url> ...]`, or `streamlit run dashboard.py` with the URLs in the
 TENT_ANALYSIS_URLS environment variable (semicolon-separated). Widgets only; everything else lives in
-tent_analysis.app.views so it can be tested without a browser.
+tent_analysis.app.views so it can be tested without a browser. The Configuration mode (tent_analysis.config.page)
+edits and validates node configuration files and needs no archive.
 """
 import os
 
@@ -41,6 +42,10 @@ def _selected_point(event) -> object | None:
 def main():
     st.set_page_config(page_title='TENT analysis', layout='wide')
     st.sidebar.title('TENT analysis')
+    if st.sidebar.radio('Mode', ['Archives', 'Configuration'], horizontal=True) == 'Configuration':
+        from tent_analysis.config.page import render
+        render()
+        return
     urls_text = st.sidebar.text_area('Archive URLs (one per line)', value='\n'.join(_urls_from_env()), height=90)
     urls = [u.strip() for u in urls_text.splitlines() if u.strip()]
     if not urls:
