@@ -5,7 +5,7 @@ import pytest
 from tent_analysis.analysis import (bid_position, cleared_prices, consensus, convergence, curve_at, horizon_matrix,
                                     net_curve, quantity_at_price, scheduled_power, signal_pairs, single_curve,
                                     state_segments)
-from tent_analysis.app.views import Selection, Views, comparison, snap_interval
+from tent_analysis.app.views import Selection, Views, comparison, date_bounds, snap_interval
 from tent_analysis.data import load_curves, load_measurements, load_signals, load_state_changes
 from tent_analysis.report import standard_figures
 from tent_analysis.viz import (bid_position_figure, consensus_strip, convergence_panel, curve_figure, curve_multiples,
@@ -99,8 +99,14 @@ def test_state_segments_and_horizon(source):
     assert (seg['end'] >= seg['start']).all() and set(seg['state']) >= {'Initial'}
     history = load_measurements(source, types=['MarginalPrice'], history=True)
     matrix = horizon_matrix(history, 'MarginalPrice', bins=6)
-    assert matrix.shape[0] == history['interval_start'].nunique() and matrix.shape[1] >= 1
-    assert matrix.notna().all(axis=None) or matrix.ffill(axis=1).iloc[:, -1].notna().all()
+    assert matrix.shape == (history['interval_start'].nunique(), 6)
+    assert matrix.iloc[:, -1].notna().all(), 'by the last record bin every interval has a known price'
+    assert matrix.columns.is_monotonic_increasing and matrix.index.is_monotonic_increasing
+    # Known values only ever accumulate along a row (forward fill): once known, never unknown again.
+    known = matrix.notna().to_numpy()
+    assert (known[:, 1:] >= known[:, :-1]).all()
+    last = history.sort_values('record_time').groupby('interval_start')['value'].last()
+    pd.testing.assert_series_equal(matrix.iloc[:, -1].sort_index(), last.sort_index(), check_names=False, check_index=False)
 
 
 def test_phase2_figures(source):
@@ -174,3 +180,28 @@ def test_snap_interval(source):
     assert snap_interval(nearer_second.strftime('%Y-%m-%d %H:%M:%S'), intervals) == second
     assert snap_interval(nearer_second.tz_convert('Asia/Tokyo').isoformat(), intervals) == second
     assert snap_interval(None, intervals) is None and snap_interval('2017-07-01', []) is None
+
+
+def test_date_bounds_and_range_selection(source):
+    from datetime import date
+    start, end = date_bounds((date(2017, 7, 1), date(2017, 7, 1)), 'UTC')
+    assert start == pd.Timestamp('2017-07-01T00:00Z') and end == pd.Timestamp('2017-07-02T00:00Z')
+    start, end = date_bounds((date(2017, 7, 1),), 'America/Los_Angeles')
+    assert str(start.tz) == 'America/Los_Angeles' and start.hour == 0 and end is None
+    assert date_bounds((), 'UTC') == (None, None) and date_bounds(date(2017, 7, 2), 'UTC')[0] == pd.Timestamp('2017-07-02T00:00Z')
+    everything = Views(source, Selection()).intervals()
+    start, end = date_bounds((date(2017, 7, 1), date(2017, 7, 1)), 'UTC')
+    first_day = Views(source, Selection(start=start, end=end))
+    chosen = first_day.intervals()
+    assert chosen and len(chosen) < len(everything) and all(t.date() == date(2017, 7, 1) for t in chosen)
+    assert first_day.overview() and first_day.costs()
+
+
+def test_signal_neighbor_selection(source):
+    views = Views(source, Selection())
+    names = views.signal_neighbors()
+    assert names == ['CoR']
+    assert list(views.signals()) == ['CoR: sent vs received']
+    assert Views(source, Selection(neighbor='nobody')).signals().keys() == {'CoR: sent vs received'}, 'unknown neighbor: first known'
+    late = Views(source, Selection(start=pd.Timestamp('2030-01-01T00:00Z')))
+    assert late.signals() == {}, 'no signals in the selected date range'

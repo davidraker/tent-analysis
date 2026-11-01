@@ -12,10 +12,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4"]
-export = ["kaleido>=1.0"]          # static PNG/PDF export of figures (needs a Chrome/Chromium; see plotly.io.get_chrome)
+dev = ["pytest>=7.4", "kaleido>=1.0", "pyarrow>=14", "streamlit>=1.30"]
+export = ["kaleido>=1.0"]          # `report --format png|pdf` (needs a Chrome/Chromium; see plotly.io.get_chrome)
+parquet = ["pyarrow>=14"]          # `export --out file.parquet`
 postgres = ["psycopg[binary]>=3.1"]
-app = ["streamlit>=1.30"]          # Phase 2 dashboard
+app = ["streamlit>=1.30"]          # `dashboard`
 
 [project.scripts]
 tent-analysis = "tent_analysis.report.cli:main"

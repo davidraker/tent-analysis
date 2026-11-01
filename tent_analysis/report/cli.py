@@ -1,4 +1,5 @@
-"""Command line: inspect an archive, export tidy frames, or write an HTML report."""
+"""Command line: inspect an archive, export tidy frames, write a report (HTML, or PNG/PDF per figure), open the
+dashboard."""
 import argparse
 import os
 import subprocess
@@ -8,13 +9,15 @@ from pathlib import Path
 import pandas as pd
 
 from tent_analysis.data import (Source, load_measurements, load_curves, load_state_changes, load_meter_readings,
-                                redact_url)
+                                load_historian_topics, load_signals, redact_url)
 from tent_analysis.report.html import build_report, standard_figures
+from tent_analysis.report.images import FORMATS, write_images
 from tent_analysis.viz import Theme
 
 EXPORTS = {'measurements': lambda s: load_measurements(s), 'history': lambda s: load_measurements(s, history=True),
-           'curves': lambda s: load_curves(s, history=True), 'state_changes': load_state_changes,
-           'meter_readings': load_meter_readings}
+           'curves': lambda s: load_curves(s, history=True), 'signals': lambda s: load_signals(s, history=True),
+           'state_changes': load_state_changes, 'meter_readings': load_meter_readings,
+           'historian_topics': load_historian_topics}
 
 
 def inspect(args) -> int:
@@ -55,15 +58,27 @@ def export(args) -> int:
 
 
 def report(args) -> int:
+    """Build every figure family; a family that fails is reported on stderr and skipped, and the exit status is 1 even
+    though the report is written, so a script notices."""
     source = Source(args.url, label=args.label)
     theme = Theme(args.mode)
-    figures = standard_figures(source, theme)
+    failures = []
+
+    def on_error(page, error):
+        failures.append(page)
+        print(f'{page} page failed and was skipped: {type(error).__name__}: {error}', file=sys.stderr)
+
+    figures = standard_figures(source, theme, on_error=on_error)
     if not figures:
         print('no figures could be built: the archive holds no prices or scheduled powers', file=sys.stderr)
         return 1
-    out = build_report(figures, args.out, title=f'TENT analysis: {source.label}', theme=theme)
-    print(f'wrote {len(figures)} figures to {out}')
-    return 0
+    if args.format == 'html':
+        out = build_report(figures, args.out, title=f'TENT analysis: {source.label}', theme=theme)
+        print(f'wrote {len(figures)} figures to {out}')
+    else:
+        paths = write_images(figures, args.out, args.format)
+        print(f'wrote {len(paths)} {args.format} files to {Path(args.out)}')
+    return 1 if failures else 0
 
 
 def dashboard(args) -> int:
@@ -84,9 +99,11 @@ def main(argv=None) -> int:
         p.set_defaults(func=fn)
         if name == 'export':
             p.add_argument('--what', choices=sorted(EXPORTS), default='measurements')
-            p.add_argument('--out', required=True, help='.csv or .parquet')
+            p.add_argument('--out', required=True, help='.csv or .parquet (parquet needs the parquet extra)')
         if name == 'report':
-            p.add_argument('--out', required=True, help='HTML file to write')
+            p.add_argument('--out', required=True, help='HTML file to write, or a directory for png/pdf')
+            p.add_argument('--format', choices=['html', *FORMATS], default='html',
+                           help='html: one self-contained page; png/pdf: one file per figure (export extra)')
             p.add_argument('--mode', choices=['light', 'dark'], default='light')
     d = sub.add_parser('dashboard', help='Open the Streamlit dashboard on one or more archives')
     d.add_argument('urls', nargs='+')

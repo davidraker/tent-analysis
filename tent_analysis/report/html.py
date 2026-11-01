@@ -1,6 +1,7 @@
-"""Assemble figures into one self-contained HTML report, and build the standard Phase 1 figure set for a source."""
+"""Assemble figures into one self-contained HTML report, and build the standard figure set for a source."""
 import html
 from pathlib import Path
+from typing import Callable
 
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -11,14 +12,25 @@ from tent_analysis.data import Source, load_measurements, load_meter_readings
 from tent_analysis.viz import Theme, color_map, price_timeline, power_timeline, cost_bars
 
 
-def standard_figures(source: Source, theme: Theme | None = None) -> dict[str, go.Figure]:
+PAGES = ('overview', 'curves', 'negotiation', 'markets', 'signals', 'bids', 'costs', 'devices')
+
+
+def standard_figures(source: Source, theme: Theme | None = None,
+                     on_error: Callable[[str, Exception], None] | None = None) -> dict[str, go.Figure]:
     """Every figure family the archive can support: overview, curves, negotiation, markets, signals, bid position,
-    costs, devices. Built through the dashboard views so report and dashboard always agree."""
+    costs, devices. Built through the dashboard views so report and dashboard always agree. A page that fails raises,
+    unless `on_error` is given: then it is called with the page name and the exception and the other pages are still
+    built, so one broken family does not cost the whole report."""
     from tent_analysis.app.views import Selection, Views
     views = Views(source, Selection(mode=(theme or Theme()).mode))
     figures: dict[str, go.Figure] = {}
-    for page in ('overview', 'curves', 'negotiation', 'markets', 'signals', 'bids', 'costs', 'devices'):
-        figures.update(getattr(views, page)())
+    for page in PAGES:
+        try:
+            figures.update(getattr(views, page)())
+        except Exception as error:
+            if on_error is None:
+                raise
+            on_error(page, error)
     return figures
 
 

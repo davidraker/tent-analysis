@@ -3,7 +3,7 @@ and `run_id` so frames from several sources can be concatenated and compared. Ar
 time column a loader returns is converted to the source's zone (Catalog.tz: the runs' configured zone, or the
 Source(tz=...) override), so hour-of-day and weekday bins and axis labels read in local time."""
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
 import pandas as pd
@@ -21,6 +21,16 @@ def _names(values) -> list | None:
     if values is None:
         return None
     return [getattr(v, 'name', v) for v in values]
+
+
+def _utc(bound: datetime | None, name: str) -> datetime | None:
+    """A time bound for the reader, in UTC: the archive stores UTC wall-clock values and SQLite compares them as text,
+    so a bound in another zone must be converted first. Naive bounds are ambiguous and refused."""
+    if bound is None:
+        return None
+    if bound.tzinfo is None:
+        raise ValueError(f'{name} must be timezone-aware, got {bound!r}')
+    return bound.astimezone(timezone.utc)
 
 
 def _in_zone(df: pd.DataFrame, source: Source, columns: Sequence[str]) -> pd.DataFrame:
@@ -47,8 +57,8 @@ def load_measurements(source: Source, types: Iterable = None, owners: Sequence[s
         headers = headers[headers['owner_name'].isin(list(owners))]
     if headers.empty:
         return pd.DataFrame(columns=MEASUREMENT_COLUMNS)
-    rows = source.reader.values(measurement_ids=list(headers['measurement_id']), start=start, end=end,
-                                latest_only=not history, as_of=as_of)
+    rows = source.reader.values(measurement_ids=list(headers['measurement_id']), start=_utc(start, 'start'),
+                                end=_utc(end, 'end'), latest_only=not history, as_of=_utc(as_of, 'as_of'))
     if not rows:
         return pd.DataFrame(columns=MEASUREMENT_COLUMNS)
     df = pd.DataFrame(rows)
@@ -82,7 +92,7 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
     if headers.empty:
         return pd.DataFrame(columns=CURVE_COLUMNS)
     curves = source.reader.curves(measurement_ids=list(headers['measurement_id']) if filtered else None,
-                                  latest_only=not history, as_of=as_of)
+                                  latest_only=not history, as_of=_utc(as_of, 'as_of'))
     records = []
     for curve in curves:
         for v in curve['vertices']:

@@ -7,7 +7,7 @@ import os
 
 import streamlit as st
 
-from tent_analysis.app.views import Selection, Views, comparison, snap_interval, source_labels
+from tent_analysis.app.views import Selection, Views, comparison, date_bounds, snap_interval, source_labels
 from tent_analysis.data import Source
 
 PAGES = {'Overview': 'overview', 'Curves': 'curves', 'Negotiation': 'negotiation', 'Markets': 'markets',
@@ -46,8 +46,15 @@ def main():
     mode = st.sidebar.radio('Theme', ['light', 'dark'], horizontal=True)
     series = st.sidebar.multiselect('Market series', sorted(cat.market_series['name']))
     owners = st.sidebar.multiselect('Owners', sorted(cat.participants['name']))
-    sel = Selection(series=series, owners=owners, mode=mode,
-                    interval_start=st.session_state.get('interval_start'), owner=st.session_state.get('owner'))
+    start = end = None
+    if not cat.intervals.empty:
+        first = cat.intervals['start_time'].min().tz_convert(cat.tz).date()
+        last = cat.intervals['end_time'].max().tz_convert(cat.tz).date()
+        picked = st.sidebar.date_input(f'Delivery dates ({cat.tz})', value=(first, last), min_value=first, max_value=last)
+        start, end = date_bounds(picked, cat.tz)
+    sel = Selection(series=series, owners=owners, start=start, end=end, mode=mode,
+                    interval_start=st.session_state.get('interval_start'), owner=st.session_state.get('owner'),
+                    neighbor=st.session_state.get('neighbor'))
     page = st.sidebar.radio('Page', list(PAGES) + (['Compare'] if len(sources) > 1 else []))
     st.header(f'{current.label}: {page}')
     intervals = []
@@ -68,6 +75,12 @@ def main():
             if names:
                 views.sel.owner = st.selectbox('Owner', names, index=names.index(sel.owner) if sel.owner in names else 0)
                 st.session_state['owner'] = views.sel.owner
+        if page == 'Signals':
+            names = views.signal_neighbors()
+            if names:
+                views.sel.neighbor = st.selectbox('Neighbor', names,
+                                                  index=names.index(sel.neighbor) if sel.neighbor in names else 0)
+                st.session_state['neighbor'] = views.sel.neighbor
         figures = getattr(views, PAGES[page])()
     if not figures:
         st.warning('Nothing to show for this selection.')

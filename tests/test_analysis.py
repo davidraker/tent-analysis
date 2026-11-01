@@ -32,9 +32,11 @@ def test_power_cost_and_aggregation(frames):
     assert len(net) == power.groupby(['market_series', 'interval_start']).ngroups
     prices = cleared_prices(latest)
     cost = energy_cost(power, prices)
-    one = cost.iloc[0]
-    hours = (one['interval_start'] - one['interval_start']).total_seconds()  # placeholder to keep pandas happy
-    assert one['cost'] == pytest.approx(-one['energy_kwh'] * one['price'])
+    assert len(cost) == len(power.merge(prices, on=['market_series', 'interval_start'])), 'one row per scheduled power with a price'
+    hours = (cost['energy_kwh'] / cost['power_kw']).round(6)
+    assert set(hours) == {0.25, 1.0}, 'energy is power times the interval length: 15 minute and hourly markets'
+    assert (cost['cost'] == -cost['energy_kwh'] * cost['price']).all()
+    assert (cost.loc[cost['power_kw'] < 0, 'cost'] > 0).all(), 'loads pay'
     by_hour = aggregate_cost(cost, 'hour')
     assert set(by_hour['hour']) <= set(range(24)) and by_hour['cost'].sum() == pytest.approx(cost['cost'].sum())
     by_weekday = aggregate_cost(cost, 'weekday')

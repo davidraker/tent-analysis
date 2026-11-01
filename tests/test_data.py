@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from tent_analysis.data import load_measurements, load_curves, load_state_changes, load_meter_readings
 from tent_analysis.data.loaders import MEASUREMENT_COLUMNS, CURVE_COLUMNS
@@ -31,7 +32,18 @@ def test_load_measurements_latest_and_history(source):
     last_in_history = history.sort_values('record_time').groupby(['measurement_id', 'interval_id'])['value'].last()
     pd.testing.assert_series_equal(cleared.sort_index(), last_in_history.sort_index(), check_names=False)
     assert load_measurements(source, types=['NoSuchType']).empty
-    assert set(load_measurements(source, owners=['Real-Time_Auction'])['owner_name']) <= {'Real-Time_Auction'} or True
+    only = load_measurements(source, owners=['SolarPv'])
+    assert set(only['owner_name']) == {'SolarPv'} and 'ScheduledPower' in set(only['measurement_type'])
+    assert load_measurements(source, owners=['nobody']).empty
+    # Bounds select on the interval start, half-open, and must be zoned (the archive compares UTC wall-clock values).
+    starts = sorted(latest['interval_start'].unique())
+    window = load_measurements(source, types=['MarginalPrice'], start=starts[1], end=starts[3])
+    assert set(window['interval_start']) == set(starts[1:3])
+    pacific_bounds = load_measurements(source, types=['MarginalPrice'], start=starts[1].tz_convert('America/Los_Angeles'),
+                                       end=starts[3].tz_convert('America/Los_Angeles'))
+    assert set(pacific_bounds['interval_start']) == set(starts[1:3]), 'the same instants, whatever zone they are given in'
+    with pytest.raises(ValueError, match='start must be timezone-aware'):
+        load_measurements(source, start=starts[1].tz_localize(None))
 
 
 def test_load_curves(source):

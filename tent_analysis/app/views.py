@@ -3,7 +3,7 @@ Dashboard logic without Streamlit: a Selection describes what the user picked, a
 plus a Selection into figures. The Streamlit script only draws widgets and calls these, so they are testable.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -40,6 +40,17 @@ def source_labels(urls: list[str]) -> list[str]:
     since labels key every comparison and legend."""
     labels = [default_label(u) for u in urls]
     return [label if labels.count(label) == 1 else f'{label} ({i + 1})' for i, label in enumerate(labels)]
+
+
+def date_bounds(dates, zone: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """Selection.start and end from a date picker: midnight of the first date to midnight after the last, in the
+    source's zone. One date (a range half picked) gives a start only; nothing gives no bounds."""
+    dates = tuple(dates) if isinstance(dates, (tuple, list)) else (dates,)
+    if not dates or dates[0] is None:
+        return None, None
+    start = pd.Timestamp(dates[0]).tz_localize(zone)
+    end = pd.Timestamp(dates[-1] + timedelta(days=1)).tz_localize(zone) if len(dates) > 1 and dates[-1] else None
+    return start, end
 
 
 def snap_interval(picked, intervals: list) -> pd.Timestamp | None:
@@ -175,11 +186,23 @@ class Views:
         segments = state_segments(changes)
         return {'Market states': market_timeline(segments, theme=self.theme)} if not segments.empty else {}
 
+    def signal_neighbors(self) -> list[str]:
+        """Neighbors with archived transactive signals (for the dashboard's neighbor picker)."""
+        signals = load_signals(self.source)
+        return sorted(signals['neighbor_name'].dropna().unique()) if not signals.empty else []
+
     def signals(self) -> dict[str, go.Figure]:
         signals = load_signals(self.source, history=True)
         if signals.empty:
             return {}
-        neighbor = self.sel.neighbor or sorted(signals['neighbor_name'].unique())[0]
+        if self.sel.start is not None:
+            signals = signals[signals['interval_start'] >= self.sel.start]
+        if self.sel.end is not None:
+            signals = signals[signals['interval_start'] < self.sel.end]
+        if signals.empty:
+            return {}
+        neighbors = sorted(signals['neighbor_name'].unique())
+        neighbor = self.sel.neighbor if self.sel.neighbor in neighbors else neighbors[0]
         starts = sorted(signals[signals['neighbor_name'] == neighbor]['interval_start'].unique())
         start = self.sel.interval_start if self.sel.interval_start in set(starts) else starts[0]
         pairs = signal_pairs(signals)
