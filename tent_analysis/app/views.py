@@ -11,8 +11,8 @@ import plotly.graph_objects as go
 from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus, convergence,
                                     energy_cost, horizon_matrix, net_curve, net_power, price_revisions,
                                     scheduled_power, signal_pairs, single_curve, state_segments)
-from tent_analysis.data import (Source, load_curves, load_historian_topics, load_measurements, load_meter_readings,
-                                load_signals, load_state_changes)
+from tent_analysis.data import (Source, default_label, load_curves, load_historian_topics, load_measurements,
+                                load_meter_readings, load_signals, load_state_changes)
 from tent_analysis.viz import (Theme, bid_position_figure, cleared_price_for, color_map, consensus_strip,
                                convergence_panel, cost_bars, curve_figure, curve_multiples, device_panel,
                                horizon_heatmap, market_timeline, negotiation_trace, power_timeline, price_timeline,
@@ -33,6 +33,13 @@ class Selection:
     @property
     def theme(self) -> Theme:
         return Theme(self.mode)
+
+
+def source_labels(urls: list[str]) -> list[str]:
+    """One distinct label per URL: the default label, numbered when two archives share a name (campus (1), campus (2)),
+    since labels key every comparison and legend."""
+    labels = [default_label(u) for u in urls]
+    return [label if labels.count(label) == 1 else f'{label} ({i + 1})' for i, label in enumerate(labels)]
 
 
 def snap_interval(picked, intervals: list) -> pd.Timestamp | None:

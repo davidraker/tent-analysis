@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from tent_analysis.analysis.curves import POSITIONS, from_local_side, single_curve
-from tent_analysis.viz.theme import Theme, color_map, time_axis
+from tent_analysis.viz.theme import Theme, color_map, text, time_axis
 from tent_analysis.viz.timelines import _alpha, _row_titles
 
 MARKER = dict(size=8, line=dict(width=2))
@@ -16,11 +16,11 @@ def _curve_traces(curve: pd.DataFrame, name: str, color: str, theme: Theme, opac
     c = curve.sort_values(['price', 'quantity'])
     surface = theme.ink['surface']
     symbols = ['circle' if bool(cont) else 'circle-open' for cont in c['continuity']]
-    line = go.Scatter(x=c['price'], y=c['quantity'], mode='lines+markers', name=name, legendgroup=name,
+    line = go.Scatter(x=c['price'], y=c['quantity'], mode='lines+markers', name=text(name), legendgroup=name,
                       showlegend=showlegend, opacity=opacity,
                       line=dict(color=color, width=2, dash=dash),
                       marker=dict(color=color, symbol=symbols, size=MARKER['size'], line=dict(color=surface, width=2)),
-                      hovertemplate='%{x:.4f} $/kWh, %{y:,.1f} kW<extra>' + name + '</extra>')
+                      hovertemplate='%{x:.4f} $/kWh, %{y:,.1f} kW<extra>' + text(name) + '</extra>')
     return [line]
 
 
@@ -153,7 +153,7 @@ def bid_position_figure(power_with_position: pd.DataFrame, theme: Theme | None =
             fig.add_trace(go.Scatter(x=pts['interval_start'], y=pts['power_kw'], mode='markers', name=position,
                                      legendgroup=position, showlegend=(i == 1),
                                      marker=dict(color=scale[position], size=8, line=dict(color=theme.ink['surface'], width=2)),
-                                     hovertemplate='%{y:,.1f} kW, ' + position + '<extra>' + owner + '</extra>'),
+                                     hovertemplate='%{y:,.1f} kW, ' + position + '<extra>' + text(owner) + '</extra>'),
                           row=i, col=1)
         fig.update_yaxes(title_text='kW', row=i, col=1)
     fig.update_xaxes(title_text=time_axis('Delivery interval start', power_with_position['interval_start']), row=len(owners), col=1)

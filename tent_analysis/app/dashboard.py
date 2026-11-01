@@ -1,13 +1,13 @@
 """
-Streamlit dashboard: `tent-analysis dashboard <url> [<url> ...]` or `streamlit run dashboard.py -- <url>`.
-Widgets only; everything else lives in tent_analysis.app.views so it can be tested without a browser.
+Streamlit dashboard: `tent-analysis dashboard <url> [<url> ...]`, or `streamlit run dashboard.py` with the URLs in the
+TENT_ANALYSIS_URLS environment variable (semicolon-separated). Widgets only; everything else lives in
+tent_analysis.app.views so it can be tested without a browser.
 """
 import os
-import sys
 
 import streamlit as st
 
-from tent_analysis.app.views import Selection, Views, comparison, snap_interval
+from tent_analysis.app.views import Selection, Views, comparison, snap_interval, source_labels
 from tent_analysis.data import Source
 
 PAGES = {'Overview': 'overview', 'Curves': 'curves', 'Negotiation': 'negotiation', 'Markets': 'markets',
@@ -19,10 +19,8 @@ def open_source(url: str, label: str) -> Source:
     return Source(url, label=label)
 
 
-def _urls_from_argv() -> list[str]:
-    urls = [a for a in sys.argv[1:] if '://' in a]
-    env = os.environ.get('TENT_ANALYSIS_URLS')
-    return urls or ([u for u in env.split(';') if u] if env else [])
+def _urls_from_env() -> list[str]:
+    return [u for u in os.environ.get('TENT_ANALYSIS_URLS', '').split(';') if u]
 
 
 def _selected_point(event) -> object | None:
@@ -36,13 +34,13 @@ def _selected_point(event) -> object | None:
 def main():
     st.set_page_config(page_title='TENT analysis', layout='wide')
     st.sidebar.title('TENT analysis')
-    urls_text = st.sidebar.text_area('Archive URLs (one per line)', value='\n'.join(_urls_from_argv()), height=90)
+    urls_text = st.sidebar.text_area('Archive URLs (one per line)', value='\n'.join(_urls_from_env()), height=90)
     urls = [u.strip() for u in urls_text.splitlines() if u.strip()]
     if not urls:
         st.info('Enter at least one SQLAlchemy URL, e.g. sqlite:///path/to/archive.sqlite')
         return
-    sources = [open_source(u, u.rsplit('/', 1)[-1].rsplit('.', 1)[0]) for u in urls]
-    labels = [s.label for s in sources]
+    labels = source_labels(urls)
+    sources = [open_source(u, label) for u, label in zip(urls, labels)]
     current = sources[labels.index(st.sidebar.selectbox('Source', labels))]
     cat = current.catalog
     mode = st.sidebar.radio('Theme', ['light', 'dark'], horizontal=True)

@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.viz.theme import SEQUENTIAL, STATUS, Theme, color_map, time_axis
+from tent_analysis.viz.theme import SEQUENTIAL, STATUS, Theme, color_map, text, time_axis
 from tent_analysis.viz.timelines import LINE, _alpha, _row_titles, add_state_bands
 
 STATE_ORDER = ['Initial', 'Inactive', 'Active', 'Negotiation', 'MarketLead', 'DeliveryLead', 'Delivery', 'Reconcile',
@@ -21,11 +21,11 @@ def negotiation_trace(history: pd.DataFrame, measurement_type: str, interval_sta
     fig = go.Figure()
     for owner, part in df.groupby('owner_name', sort=True):
         part = part.sort_values('record_time')
-        fig.add_trace(go.Scatter(x=part['record_time'], y=part['value'], mode='lines+markers', name=str(owner),
+        fig.add_trace(go.Scatter(x=part['record_time'], y=part['value'], mode='lines+markers', name=text(owner),
                                  line=dict(color=colors.get(owner, theme.ink['muted']), **LINE),
                                  marker=dict(size=8, color=colors.get(owner, theme.ink['muted']),
                                              line=dict(color=theme.ink['surface'], width=2)),
-                                 hovertemplate='%{y:,.4f} ' + unit + '<extra>' + str(owner) + '</extra>'))
+                                 hovertemplate='%{y:,.4f} ' + unit + '<extra>' + text(owner) + '</extra>'))
     if state_changes is not None and market_name:
         add_state_bands(fig, state_changes, market_name, theme)
     fig.update_xaxes(title_text=time_axis('Record time', history['record_time']))
@@ -62,16 +62,16 @@ def convergence_panel(conv: pd.DataFrame, colors: dict | None = None, theme: The
     _row_titles(fig, ['Revisions per interval', 'Converged'], theme)
     for owner, part in conv.groupby('owner_name', sort=True):
         part = part.sort_values('interval_start')
-        fig.add_trace(go.Bar(x=part['interval_start'], y=part['revisions'], name=str(owner),
+        fig.add_trace(go.Bar(x=part['interval_start'], y=part['revisions'], name=text(owner),
                              marker=dict(color=colors.get(owner, theme.ink['muted']),
                                          line=dict(color=theme.ink['surface'], width=1)),
-                             hovertemplate='%{y} revisions<extra>' + str(owner) + '</extra>'), row=1, col=1)
+                             hovertemplate='%{y} revisions<extra>' + text(owner) + '</extra>'), row=1, col=1)
     flags = conv[conv['converged'].notna()]
     for converged, label, color in ((True, 'converged', STATUS['good']), (False, 'not converged', STATUS['critical'])):
         pts = flags[flags['converged'].astype(bool) == converged]
         if pts.empty:
             continue
-        fig.add_trace(go.Scatter(x=pts['interval_start'], y=pts['owner_name'], mode='markers', name=label,
+        fig.add_trace(go.Scatter(x=pts['interval_start'], y=pts['owner_name'].map(text), mode='markers', name=label,
                                  marker=dict(symbol='square', size=9, color=color,
                                              line=dict(color=theme.ink['surface'], width=1)),
                                  hovertemplate=label + '<extra>%{y}</extra>'), row=2, col=1)
@@ -89,15 +89,15 @@ def market_timeline(segments: pd.DataFrame, theme: Theme | None = None, title: s
     palette = theme.categorical
     state_colors = {state: palette[i % len(palette)] for i, state in enumerate(STATE_ORDER)}
     fig = go.Figure()
-    markets = list(dict.fromkeys(segments.sort_values('start')['market_name']))
+    markets = [text(m) for m in dict.fromkeys(segments.sort_values('start')['market_name'])]
     shown = set()
     for _, seg in segments.iterrows():
         duration_ms = max((seg['end'] - seg['start']).total_seconds() * 1000.0, 1.0)
-        fig.add_trace(go.Bar(x=[duration_ms], y=[seg['market_name']], base=[seg['start']], orientation='h',
-                             name=seg['state'], legendgroup=seg['state'], showlegend=seg['state'] not in shown,
+        fig.add_trace(go.Bar(x=[duration_ms], y=[text(seg['market_name'])], base=[seg['start']], orientation='h',
+                             name=text(seg['state']), legendgroup=seg['state'], showlegend=seg['state'] not in shown,
                              marker=dict(color=state_colors.get(seg['state'], theme.ink['muted']),
                                          line=dict(color=theme.ink['surface'], width=2)),
-                             customdata=[[seg['state'], str(seg['start']), str(seg['end'])]],
+                             customdata=[[text(seg['state']), str(seg['start']), str(seg['end'])]],
                              hovertemplate='%{customdata[0]}<br>%{customdata[1]} to %{customdata[2]}<extra>%{y}</extra>'))
         shown.add(seg['state'])
     fig.update_layout(barmode='overlay', bargap=0.35)
@@ -116,7 +116,7 @@ def consensus_strip(consensus: pd.DataFrame, theme: Theme | None = None) -> go.F
         pts = consensus[consensus['consensus'].astype(bool) == flag]
         if pts.empty:
             continue
-        fig.add_trace(go.Scatter(x=pts['interval_start'], y=pts['market_series'], mode='markers', name=label,
+        fig.add_trace(go.Scatter(x=pts['interval_start'], y=pts['market_series'].map(text), mode='markers', name=label,
                                  marker=dict(symbol='square', size=10, color=color,
                                              line=dict(color=theme.ink['surface'], width=1)),
                                  hovertemplate=label + '<extra>%{y}</extra>'))
@@ -137,9 +137,9 @@ def device_panel(topics: pd.DataFrame, theme: Theme | None = None, title: str = 
     for i, name in enumerate(names, start=1):
         part = topics[topics['topic'] == name].sort_values('ts')
         values = pd.to_numeric(part['value'], errors='coerce')
-        fig.add_trace(go.Scatter(x=part['ts'], y=values, mode='lines', name=name, showlegend=False,
+        fig.add_trace(go.Scatter(x=part['ts'], y=values, mode='lines', name=text(name), showlegend=False,
                                  line=dict(color=colors[name], width=2),
-                                 hovertemplate='%{y}<extra>' + name + '</extra>'), row=i, col=1)
+                                 hovertemplate='%{y}<extra>' + text(name) + '</extra>'), row=i, col=1)
     fig.update_xaxes(title_text=time_axis('Time', topics['ts']), row=len(names), col=1)
     theme.apply(fig, title=title, height=max(300, 150 * len(names) + 100))
     return fig

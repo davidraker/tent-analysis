@@ -2,7 +2,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 
-from tent_analysis.viz.theme import Theme, color_map
+from tent_analysis.viz.theme import Theme, color_map, text
 
 
 def cost_bars(aggregated: pd.DataFrame, by: str, baseline: str | None = None, colors: dict | None = None,
@@ -19,10 +19,10 @@ def cost_bars(aggregated: pd.DataFrame, by: str, baseline: str | None = None, co
     fig = go.Figure()
     for g in groups:
         part = df[df[group] == g]
-        fig.add_trace(go.Bar(x=part[by].astype(str), y=part['cost'], name=str(g),
+        fig.add_trace(go.Bar(x=part[by].astype(str), y=part['cost'], name=text(g),
                              marker=dict(color=colors.get(g, theme.ink['muted']),
                                          line=dict(color=theme.ink['surface'], width=2)),
-                             hovertemplate='%{x}: $%{y:,.2f}<extra>' + str(g) + '</extra>'))
+                             hovertemplate='%{x}: $%{y:,.2f}<extra>' + text(g) + '</extra>'))
     fig.update_layout(barmode='group', bargap=0.3, bargroupgap=0.05)
     fig.update_yaxes(title_text='Cost [$] (positive = paid)')
     fig.update_xaxes(title_text=by.capitalize())

@@ -3,6 +3,7 @@ One visual system for every figure (dataviz skill conventions). Colours follow e
 built once from the sorted entity names of a catalog and reused by every figure, so a filter never repaints survivors.
 Palette values are the skill's validated reference palette (references/palette.md); swap them for a brand palette.
 """
+import html
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -61,12 +62,20 @@ class Theme:
         ))
 
     def apply(self, fig: go.Figure, title: str | None = None, height: int | None = None) -> go.Figure:
+        """Template, title and height. The title is escaped: it usually carries names from the archive."""
         fig.update_layout(template=self.template())
         if title:
-            fig.update_layout(title=dict(text=title))
+            fig.update_layout(title=dict(text=text(title)))
         if height:
             fig.update_layout(height=height)
         return fig
+
+
+def text(value) -> str:
+    """A value from the archive (owner, series, market, topic, source label) as Plotly text. Plotly renders a small
+    HTML subset in titles, legends, hover and tick labels, so a name holding markup would become live markup; escaping
+    makes it read as written. Use for every trace name, hover extra, title and category label built from data."""
+    return html.escape(str(value), quote=False)
 
 
 def color_map(names, theme: Theme | None = None) -> dict[str, str]:

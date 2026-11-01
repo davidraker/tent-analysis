@@ -1,8 +1,29 @@
 """A Source is one archive (database) opened for reading, with a label used throughout every DataFrame and figure."""
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import PurePath
 
+from sqlalchemy import Table
+from sqlalchemy.engine import make_url
 from tent.data_manager.local_data_manager import LocalDataManager
+
+HISTORIAN_TABLES = ('topics', 'data')  # VOLTTRON SQL historian tables that may share the database
+
+
+def redact_url(url: str) -> str:
+    """The URL with any password replaced by ***, for printing and labels."""
+    return make_url(url).render_as_string(hide_password=True)
+
+
+def default_label(url: str) -> str:
+    """A label from the database name (file stem for SQLite, database for a server), else the host. Never the
+    credentials: a URL without database or host has no safe label and must be labelled explicitly."""
+    parsed = make_url(url)
+    if parsed.database:
+        return PurePath(parsed.database).stem
+    if parsed.host:
+        return parsed.host
+    raise ValueError(f'no database or host in {redact_url(url)} to label the source by; pass label=')
 
 
 @dataclass(frozen=True)
@@ -35,13 +56,18 @@ class Source:
 
     def __post_init__(self):
         if self.reader is None:
-            self.reader = LocalDataManager.from_url(self.url)
+            # Only TENT's own tables are registered; of anything else in the database, only the historian tables are
+            # reflected, and only when present.
+            self.reader = LocalDataManager.from_url(self.url, reflect_unknown=False)
+            present = self.reader.present_tables
+            if set(HISTORIAN_TABLES) <= present:
+                for name in HISTORIAN_TABLES:
+                    self.reader.tables[name] = Table(name, self.reader.registry.metadata, autoload_with=self.reader.engine)
         if self.label is None:
-            self.label = self._default_label()
+            self.label = default_label(self.url)
 
-    def _default_label(self) -> str:
-        tail = self.url.rsplit('/', 1)[-1]
-        return tail.rsplit('.', 1)[0] if tail else self.url
+    def __repr__(self) -> str:
+        return f'Source(url={redact_url(self.url)!r}, label={self.label!r}, tz={self.tz!r})'
 
     @cached_property
     def schema(self) -> Schema:

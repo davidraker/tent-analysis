@@ -1,11 +1,14 @@
 """Command line: inspect an archive, export tidy frames, or write an HTML report."""
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
 
-from tent_analysis.data import Source, load_measurements, load_curves, load_state_changes, load_meter_readings
+from tent_analysis.data import (Source, load_measurements, load_curves, load_state_changes, load_meter_readings,
+                                redact_url)
 from tent_analysis.report.html import build_report, standard_figures
 from tent_analysis.viz import Theme
 
@@ -17,7 +20,7 @@ EXPORTS = {'measurements': lambda s: load_measurements(s), 'history': lambda s: 
 def inspect(args) -> int:
     source = Source(args.url, label=args.label)
     cat = source.catalog
-    print(f'Source: {source.label} ({source.url})')
+    print(f'Source: {source.label} ({redact_url(source.url)})')
     print(f'Tables present: {len(source.schema.tables)} | historian topics: {source.schema.has_historian_topics} '
           f'| meter readings: {source.schema.has_meter_readings} | orders: {source.schema.has_orders}')
     runs = cat.runs
@@ -64,13 +67,11 @@ def report(args) -> int:
 
 
 def dashboard(args) -> int:
-    """Launch the Streamlit dashboard on the given archives."""
-    import os
-    import subprocess
-    from pathlib import Path as _P
-    script = _P(__file__).resolve().parent.parent / 'app' / 'dashboard.py'
+    """Launch the Streamlit dashboard on the given archives. The URLs travel in the TENT_ANALYSIS_URLS environment
+    variable, not on the Streamlit process's command line, where a password would be visible to every process list."""
+    script = Path(__file__).resolve().parent.parent / 'app' / 'dashboard.py'
     env = dict(os.environ, TENT_ANALYSIS_URLS=';'.join(args.urls))
-    return subprocess.call([sys.executable, '-m', 'streamlit', 'run', str(script), '--', *args.urls], env=env)
+    return subprocess.call([sys.executable, '-m', 'streamlit', 'run', str(script)], env=env)
 
 
 def main(argv=None) -> int:

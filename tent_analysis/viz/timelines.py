@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.viz.theme import Theme, color_map, time_axis
+from tent_analysis.viz.theme import Theme, color_map, text, time_axis
 
 LINE = dict(width=2, shape='hv')
 
@@ -14,7 +14,7 @@ def _row_titles(fig: go.Figure, titles: list[str], theme: Theme) -> None:
     for i, title in enumerate(titles, start=1):
         domain = fig.layout[f'yaxis{"" if i == 1 else i}'].domain
         fig.add_annotation(xref='paper', yref='paper', x=0.0, y=domain[1], xanchor='left', yanchor='top',
-                           text=f'<b>{title}</b>', showarrow=False, font=dict(size=11, color=theme.ink['secondary']),
+                           text=f'<b>{text(title)}</b>', showarrow=False, font=dict(size=11, color=theme.ink['secondary']),
                            bgcolor=_alpha(theme.ink['surface'], 0.8), borderpad=2)
 
 
@@ -51,10 +51,10 @@ def price_timeline(prices: pd.DataFrame, revisions: pd.DataFrame | None = None, 
                                              y=pd.concat([band['max'], band['min'][::-1]]), fill='toself',
                                              fillcolor=_alpha(color, 0.15), line=dict(width=0), hoverinfo='skip',
                                              showlegend=False, name=f'{series} revisions'), row=i, col=1)
-            fig.add_trace(go.Scatter(x=grp['interval_start'], y=grp['price'], mode='lines', name=str(series),
+            fig.add_trace(go.Scatter(x=grp['interval_start'], y=grp['price'], mode='lines', name=text(series),
                                      legendgroup=str(series), showlegend=series not in shown,
                                      line=dict(color=color, **LINE),
-                                     hovertemplate='%{y:.4f} $/kWh<extra>' + str(series) + '</extra>'), row=i, col=1)
+                                     hovertemplate='%{y:.4f} $/kWh<extra>' + text(series) + '</extra>'), row=i, col=1)
             shown.add(series)
         fig.update_yaxes(title_text='$/kWh', row=i, col=1)
     fig.update_xaxes(title_text=time_axis('Delivery interval start', prices['interval_start']), row=len(rows), col=1)
@@ -77,9 +77,9 @@ def power_timeline(power: pd.DataFrame, net: pd.DataFrame | None = None, meters:
         _row_titles(fig, ['By owner', 'Net and metered'], theme)
     for owner, grp in power.groupby('owner_name', sort=True):
         grp = grp.sort_values('interval_start')
-        fig.add_trace(go.Scatter(x=grp['interval_start'], y=grp['power_kw'], mode='lines', name=str(owner),
+        fig.add_trace(go.Scatter(x=grp['interval_start'], y=grp['power_kw'], mode='lines', name=text(owner),
                                  line=dict(color=colors.get(owner, theme.ink['muted']), **LINE),
-                                 hovertemplate='%{y:,.1f} kW<extra>' + str(owner) + '</extra>'), row=1, col=1)
+                                 hovertemplate='%{y:,.1f} kW<extra>' + text(owner) + '</extra>'), row=1, col=1)
     fig.add_hline(y=0, line=dict(color=theme.ink['axis'], width=1), row=1, col=1)
     if rows == 2:
         if net is not None and not net.empty:
@@ -89,9 +89,9 @@ def power_timeline(power: pd.DataFrame, net: pd.DataFrame | None = None, meters:
                                      hovertemplate='%{y:,.1f} kW<extra>Net scheduled</extra>'), row=2, col=1)
         if meters is not None and not meters.empty:
             for meter, grp in meters.groupby('meter_name', sort=True):
-                fig.add_trace(go.Scatter(x=grp['reading_time'], y=grp['value'], mode='lines', name=f'Metered: {meter}',
+                fig.add_trace(go.Scatter(x=grp['reading_time'], y=grp['value'], mode='lines', name=f'Metered: {text(meter)}',
                                          line=dict(color=theme.ink['secondary'], width=2, dash='dot'),
-                                         hovertemplate='%{y:,.1f}<extra>Metered: ' + str(meter) + '</extra>'),
+                                         hovertemplate='%{y:,.1f}<extra>Metered: ' + text(meter) + '</extra>'),
                               row=2, col=1)
         fig.add_hline(y=0, line=dict(color=theme.ink['axis'], width=1), row=2, col=1)
         fig.update_yaxes(title_text='kW', row=2, col=1)
@@ -112,7 +112,7 @@ def add_state_bands(fig: go.Figure, state_changes: pd.DataFrame, market_name: st
     for (start, state), end in zip(zip(df['record_time'], df['state']), times[1:]):
         if state in states and end is not None:
             fig.add_vrect(x0=start, x1=end, fillcolor=_alpha(theme.ink['muted'], 0.08), line_width=0,
-                          annotation_text=state, annotation_position='top left',
+                          annotation_text=text(state), annotation_position='top left',
                           annotation_font=dict(color=theme.ink['muted'], size=10))
     return fig
 
