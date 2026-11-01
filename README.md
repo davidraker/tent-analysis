@@ -22,8 +22,10 @@ Extras: `export` (Kaleido, for `report --format png|pdf`; needs a Chrome or Chro
 Passwords are never printed or used in labels: the default label is the database name (file stem for SQLite), else
 the host.
 
-- `inspect` lists runs (with their configured time zone), components by type, measurement headers by owner type, and
-  the order book's size and latest statuses when the archive has one.
+- `inspect` prints the archive schema version the database was written with (`tent.data_manager.ARCHIVE_SCHEMA_VERSION`
+  of the writing TENT; version 1, without an `archive_schema` table, is everything before 2 November 2026), then lists
+  runs (with their configured time zone), components by type, measurement headers by owner type, and the order book's
+  size and latest statuses when the archive has one.
 - `export` writes one tidy frame as CSV or Parquet. `--what` is one of `measurements` (latest version per interval),
   `history` (every version), `curves` (one row per vertex, every version, order book excluded), `signals` (sent and
   received transactive signals, one row per vertex), `orders` (every version of every order, one row per vertex),

@@ -24,6 +24,12 @@ def inspect(args) -> int:
     source = Source(args.url, label=args.label)
     cat = source.catalog
     print(f'Source: {source.label} ({redact_url(source.url)})')
+    schema = source.reader.archive_schema_record()
+    if schema is None:
+        print('Archive schema version: 1 (no archive_schema table: written by a TENT before 2 November 2026)')
+    else:
+        print(f'Archive schema version: {schema["version"]} (TENT {schema["tent_version"]}, '
+              f'created {schema["created"]})')
     print(f'Tables present: {len(source.schema.tables)} | historian topics: {source.schema.has_historian_topics} '
           f'| meter readings: {source.schema.has_meter_readings} | order book: {source.schema.has_orders}')
     runs = cat.runs

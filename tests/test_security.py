@@ -1,6 +1,7 @@
 """Credentials stay out of output, archive names cannot inject markup into figures, unknown tables are not reflected."""
 import pandas as pd
 import pytest
+from tent.data_manager import ARCHIVE_SCHEMA_VERSION
 
 from tent_analysis.app.views import Selection, Views, source_labels
 from tent_analysis.data import Source, default_label, load_historian_topics, redact_url
@@ -28,6 +29,7 @@ def test_inspect_prints_the_redacted_url(source, capsys):
     assert cli.main(['inspect', source.url]) == 0
     out = capsys.readouterr().out
     assert f'Source: campus_a ({redact_url(source.url)})' in out and 'Runs (1)' in out
+    assert f'Archive schema version: {ARCHIVE_SCHEMA_VERSION} (TENT ' in out, 'inspect says which schema wrote the archive'
 
 
 def test_dashboard_launcher_keeps_urls_off_argv(monkeypatch):
