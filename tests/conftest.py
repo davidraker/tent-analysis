@@ -86,9 +86,11 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1)
         sent = TransactiveSignal(market=market, neighbor=neighbor, direction=SignalDirection.sent, signal_time=Timer.now())
         received = TransactiveSignal(market=market, neighbor=neighbor, direction=SignalDirection.received,
                                      signal_time=Timer.now() + timedelta(seconds=30))
+        # The received signal is stated from the remote side (TENT convention), so its quantities carry the opposite
+        # sign: the remote offers +45 kW where the local side asks -50 kW, and so on.
         for ti in market.time_intervals[:4]:
             sent.update(ti, [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)], archive=False)
-            received.update(ti, [Vertex(price=0.03, quantity=-45.0), Vertex(price=0.09, quantity=36.0)], archive=False)
+            received.update(ti, [Vertex(price=0.03, quantity=45.0), Vertex(price=0.09, quantity=-36.0)], archive=False)
         sent.archive()
         received.archive()
     if tn.meter_points:

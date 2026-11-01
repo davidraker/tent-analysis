@@ -80,10 +80,17 @@ def bid_position(power: pd.DataFrame, curves: pd.DataFrame) -> pd.DataFrame:
     return out.drop(columns=['min', 'max'])
 
 
+def from_local_side(received: pd.DataFrame) -> pd.DataFrame:
+    """A received signal stated from the local side. TENT archives a received signal as the remote node stated it,
+    so its quantities carry the remote sign (the remote's import is the local export); negating them makes a received
+    curve comparable with the sent one, as TransactiveSignal.balance_points_differ does before testing convergence."""
+    return received.assign(quantity=-received['quantity'])
+
+
 def signal_pairs(signals: pd.DataFrame, thresholds: dict | None = None) -> pd.DataFrame:
     """Sent versus received signal per neighbor and interval: latest curve each way, and the largest quantity gap
-    between them across the union of their price breakpoints. `thresholds` maps neighbor name to its convergence
-    threshold [kW] to flag mismatches."""
+    between them across the union of their price breakpoints, with the received curve restated from the local side
+    (see from_local_side). `thresholds` maps neighbor name to its convergence threshold [kW] to flag mismatches."""
     columns = ['source', 'neighbor_name', 'market_series', 'interval_start', 'sent_time', 'received_time',
                'sent_vertices', 'received_vertices', 'max_quantity_gap', 'exceeds_threshold']
     if signals.empty:
@@ -94,6 +101,8 @@ def signal_pairs(signals: pd.DataFrame, thresholds: dict | None = None) -> pd.Da
         sides = {}
         for direction, part in grp.groupby('direction'):
             newest = part[part['record_time'] == part['record_time'].max()]
+            if direction == 'received':
+                newest = from_local_side(newest)
             sides[direction] = newest.sort_values(['price', 'quantity'])
         sent, received = sides.get('sent'), sides.get('received')
         gap = None

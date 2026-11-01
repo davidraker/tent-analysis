@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.analysis.curves import POSITIONS, latest_version
+from tent_analysis.analysis.curves import POSITIONS, from_local_side, latest_version
 from tent_analysis.viz.theme import Theme, color_map
 from tent_analysis.viz.timelines import _alpha, _row_titles
 
@@ -89,21 +89,27 @@ def curve_multiples(curves: pd.DataFrame, owner: str, prices: pd.DataFrame | Non
 
 def signal_comparison(signals: pd.DataFrame, neighbor: str, interval_start, theme: Theme | None = None,
                       threshold: float | None = None) -> go.Figure:
-    """Sent (solid) versus received (dashed) signal curves for one neighbor and interval."""
+    """Sent (solid) versus received (dashed) signal curves for one neighbor and interval. The received curve is drawn
+    from the local side (quantities negated, see analysis.curves.from_local_side) so the two overlap when they agree."""
     theme = theme or Theme()
     df = signals[(signals['neighbor_name'] == neighbor) & (signals['interval_start'] == interval_start)]
     fig = go.Figure()
     colors = {'sent': theme.categorical[0], 'received': theme.categorical[1]}
     for direction, part in df.groupby('direction'):
         newest = part[part['record_time'] == part['record_time'].max()]
+        if direction == 'received':
+            newest = from_local_side(newest)
         fig.add_traces(_curve_traces(newest, direction.capitalize(), colors.get(direction, theme.ink['muted']), theme,
                                      dash='solid' if direction == 'sent' else 'dash'))
     fig.add_hline(y=0, line=dict(color=theme.ink['axis'], width=1))
+    fig.add_annotation(xref='paper', yref='paper', x=0, y=1, xanchor='left', yanchor='bottom', showarrow=False,
+                       text='received signal restated from the local side (quantities negated)',
+                       font=dict(size=10, color=theme.ink['muted']))
     if threshold is not None:
         fig.add_annotation(xref='paper', yref='paper', x=1, y=1, xanchor='right', yanchor='bottom', showarrow=False,
                            text=f'convergence threshold {threshold:g} kW', font=dict(size=10, color=theme.ink['muted']))
     fig.update_xaxes(title_text='Price [$/kWh]')
-    fig.update_yaxes(title_text='Quantity [kW]')
+    fig.update_yaxes(title_text='Quantity [kW] (local side: supply +, demand -)')
     theme.apply(fig, title=f'{neighbor}: sent vs received, {pd.Timestamp(interval_start):%b %d %H:%M}', height=400)
     fig.update_layout(hovermode='closest')
     return fig

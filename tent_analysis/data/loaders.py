@@ -155,7 +155,9 @@ SIGNAL_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal
 
 
 def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool = False) -> pd.DataFrame:
-    """Transactive signals (sent and received) as one row per vertex, with neighbor, market, direction, signal time."""
+    """Transactive signals (sent and received) as one row per vertex, with neighbor, market, direction, signal time.
+    Quantities are as archived: a received signal states the exchange from the remote side, so its sign is opposite to
+    the local convention (analysis.curves.from_local_side restates it)."""
     reader = source.reader
     if not source.reader.has_table('transactive_signal'):
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
