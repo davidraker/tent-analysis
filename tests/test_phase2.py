@@ -3,8 +3,9 @@ import plotly.graph_objects as go
 import pytest
 
 from tent_analysis.analysis import (bid_position, cleared_prices, consensus, convergence, curve_at, horizon_matrix,
-                                    net_curve, quantity_at_price, scheduled_power, signal_pairs, state_segments)
-from tent_analysis.app.views import Selection, Views, comparison
+                                    net_curve, quantity_at_price, scheduled_power, signal_pairs, single_curve,
+                                    state_segments)
+from tent_analysis.app.views import Selection, Views, comparison, snap_interval
 from tent_analysis.data import load_curves, load_measurements, load_signals, load_state_changes
 from tent_analysis.report import standard_figures
 from tent_analysis.viz import (bid_position_figure, consensus_strip, convergence_panel, curve_figure, curve_multiples,
@@ -52,6 +53,35 @@ def test_curve_helpers(source):
     own_start = curves[curves['owner_name'] == owner]['interval_start'].iloc[0]
     latest = curve_at(curves, owner, own_start)
     assert len(latest) == 4 and latest['price'].is_monotonic_increasing
+    assert curve_at(curves, owner, own_start, measurement_type='ActiveVertex').equals(latest)
+    assert curve_at(curves, owner, own_start, measurement_type='SystemVertex').empty
+    earlier = curve_at(curves, owner, own_start, when=curves['record_time'].min())
+    assert len(earlier) == 2 and earlier['record_time'].nunique() == 1, 'as-of the first record: the first version only'
+    with pytest.raises(ValueError, match='timezone-aware'):
+        curve_at(curves, owner, own_start, when=curves['record_time'].min().tz_localize(None))
+
+
+def test_distinct_curves_are_not_merged(source):
+    """A neighbor archives its sent and received signal vertices as two curves per interval (same owner, same type)."""
+    curves = load_curves(source, history=True)
+    neighbor = curves[curves['direction'].notna()]['owner_name'].iloc[0]
+    start = sorted(curves[curves['owner_name'] == neighbor]['interval_start'].unique())[0]
+    both = curves[(curves['owner_name'] == neighbor) & (curves['interval_start'] == start)]
+    assert both['curve_id'].nunique() == 2 and both['measurement_type'].nunique() == 1
+    with pytest.raises(ValueError, match=r'2 distinct curves \(SignalVertex \(received\), SignalVertex \(sent\)\)'):
+        curve_at(curves, neighbor, start)
+    with pytest.raises(ValueError, match='distinct curves'):
+        curve_multiples(both, neighbor)
+    sent = single_curve(both[both['direction'] == 'sent'])
+    assert sent['curve_id'].nunique() == 1 and list(sent.sort_values('price')['quantity']) == [-50.0, 30.0]
+    # The dashboard draws each as its own figure, with its own history.
+    figures = Views(source, Selection(owner=neighbor, interval_start=start)).curves()
+    keys = [k for k in figures if k.startswith(neighbor)]
+    assert any('(sent) at' in k for k in keys) and any('(received) at' in k for k in keys)
+    for key in keys:
+        if ' at ' in key:
+            assert len(figures[key].data) == 1, 'one version, so no faded revisions and no merged second curve'
+            assert len(figures[key].data[0].y) == 2
 
 
 def test_bid_position_and_consensus(source):
@@ -107,9 +137,40 @@ def test_views_and_report(source, variant):
                                                         'bids', 'costs', 'devices')}
     assert pages['devices'] == {}, 'no historian tables in this archive'
     assert all(pages[p] for p in ('overview', 'curves', 'negotiation', 'markets', 'signals', 'bids', 'costs'))
-    focused = Views(source, Selection(interval_start=views.intervals()[2]))
-    assert any('curve' in k.lower() or 'at' in k for k in focused.curves())
+    system = load_curves(source, types=['SystemVertex'])
+    market, third = system['owner_name'].iloc[0], sorted(system['interval_start'].unique())[2]
+    focused = Views(source, Selection(owner=market, interval_start=third)).curves()
+    assert any(k.endswith(f'at {third:%b %d %H:%M}') for k in focused), 'the focused interval is the one drawn'
+    assert any(k.startswith('System curve') for k in focused)
     figures = standard_figures(source)
     assert len(figures) >= 12
     cmp = comparison([source, variant], baseline=source, selection=Selection())
     assert {'Cleared price by source', 'Price change vs baseline', 'Cost change vs baseline'} <= set(cmp)
+
+
+def test_owner_filter_keeps_market_owned_prices(source):
+    everything = Views(source, Selection())
+    asset = sorted(source.catalog.participants['name'])[0]
+    only_asset = Views(source, Selection(owners=[asset]))
+    assert only_asset.intervals() == everything.intervals(), 'prices are owned by the market, not by any owner'
+    power = only_asset.measurements(['ScheduledPower'])
+    assert set(power['owner_name']) == {asset}
+    assert set(only_asset.measurements(['MarginalPrice'])['owner_name']) == set(everything.measurements(['MarginalPrice'])['owner_name'])
+    assert only_asset.costs(), 'costs need prices and the owner\'s power; before the fix the owner filter emptied them'
+    power_traces = {t.name for t in only_asset.overview()['Scheduled power'].data}
+    assert asset in power_traces and not (power_traces & (set(source.catalog.participants['name']) - {asset}))
+    assert 'market' not in set(source.catalog.participants['type']) and set(source.catalog.participants['type']) >= {'neighbor', 'solar_pv_resource'}
+
+
+def test_snap_interval(source):
+    intervals = Views(source, Selection()).intervals()
+    first, second = intervals[0], intervals[1]
+    assert first.tz is not None
+    # Plotly hands back the axis value as wall-clock text without the zone.
+    assert snap_interval(first.strftime('%Y-%m-%d %H:%M'), intervals) == first
+    assert snap_interval(first.strftime('%Y-%m-%d %H:%M:%S.%f'), intervals) == first
+    # A click between two intervals snaps to the nearer one; an aware value is converted, not re-localised.
+    nearer_second = second - (second - first) / 4
+    assert snap_interval(nearer_second.strftime('%Y-%m-%d %H:%M:%S'), intervals) == second
+    assert snap_interval(nearer_second.tz_convert('Asia/Tokyo').isoformat(), intervals) == second
+    assert snap_interval(None, intervals) is None and snap_interval('2017-07-01', []) is None

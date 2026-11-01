@@ -10,15 +10,49 @@ def latest_version(curves: pd.DataFrame, when: datetime | None = None) -> pd.Dat
     """Keep one version per curve id: the newest, optionally no later than `when`."""
     if curves.empty:
         return curves
+    if when is not None and when.tzinfo is None:
+        raise ValueError(f'when must be timezone-aware (archive times are zoned), got {when!r}')
     df = curves if when is None else curves[curves['record_time'] <= when]
     newest = df.groupby('curve_id')['record_time'].transform('max')
     return df[df['record_time'] == newest]
 
 
-def curve_at(curves: pd.DataFrame, owner: str, interval_start, when: datetime | None = None) -> pd.DataFrame:
-    """The supply/demand curve (vertex rows sorted by price) of one owner for one interval, as of `when`."""
+def single_curve(rows: pd.DataFrame, when: datetime | None = None) -> pd.DataFrame:
+    """One curve out of vertex rows that may hold several versions and several curve ids: the newest version of each
+    curve id as of `when`, then, if one measurement still has several curve ids (markets of one series re-covering an
+    interval, each with its own TimeInterval), the curve recorded last. Rows of more than one measurement are distinct
+    curves (a neighbor's sent and received signals, an asset's active vertices next to a system curve) and raise."""
+    latest = latest_version(rows, when)
+    if latest.empty:
+        return latest
+    if latest['measurement_id'].nunique() > 1:
+        kinds = latest.groupby('measurement_id', sort=False).first()
+        names = ', '.join(sorted(f"{k['measurement_type']}" + (f" ({k['direction']})" if 'direction' in k and pd.notna(k['direction']) else '')
+                                 for _, k in kinds.iterrows()))
+        raise ValueError(f'rows hold {len(kinds)} distinct curves ({names}); filter to one measurement first')
+    if latest['curve_id'].nunique() > 1:
+        newest = latest.loc[latest['record_time'].idxmax(), 'curve_id']
+        latest = latest[latest['curve_id'] == newest]
+    return latest
+
+
+def newest_measurement(rows: pd.DataFrame) -> pd.DataFrame:
+    """Of several measurements' curve rows, those of the measurement whose latest version was recorded last: the rule
+    for markets of one series re-covering an interval, where the later market's curve supersedes the earlier one."""
+    if rows.empty:
+        return rows
+    return rows[rows['measurement_id'] == rows.loc[rows['record_time'].idxmax(), 'measurement_id']]
+
+
+def curve_at(curves: pd.DataFrame, owner: str, interval_start, measurement_type: str | None = None,
+             when: datetime | None = None) -> pd.DataFrame:
+    """The supply/demand curve (vertex rows sorted by price) of one owner for one interval, as of `when`. An owner with
+    curves of several measurement types for the interval needs `measurement_type`; an owner with several curves of one
+    type (a neighbor's sent and received signal vertices) has no single curve and raises (see single_curve)."""
     df = curves[(curves['owner_name'] == owner) & (curves['interval_start'] == interval_start)]
-    return latest_version(df, when).sort_values(['price', 'quantity']).reset_index(drop=True)
+    if measurement_type is not None:
+        df = df[df['measurement_type'] == measurement_type]
+    return single_curve(df, when).sort_values(['price', 'quantity']).reset_index(drop=True)
 
 
 def quantity_at_price(curve: pd.DataFrame, price: float) -> float | None:
@@ -42,7 +76,9 @@ def net_curve(curves: pd.DataFrame, market_series: str, interval_start, prices: 
     price crosses it: {'price', 'quantity'}."""
     df = curves[(curves['measurement_type'] == 'SystemVertex') & (curves['market_series'] == market_series)
                 & (curves['interval_start'] == interval_start)]
-    curve = latest_version(df, when).sort_values(['price', 'quantity']).reset_index(drop=True)
+    # Each market of the series is its own component with its own SystemVertex measurement; the latest one wins.
+    curve = single_curve(newest_measurement(latest_version(df, when)), when).sort_values(['price', 'quantity']) \
+        .reset_index(drop=True)
     crossing = None
     if prices is not None and not curve.empty:
         p = prices[(prices['market_series'] == market_series) & (prices['interval_start'] == interval_start)]
@@ -125,6 +161,8 @@ def state_segments(state_changes: pd.DataFrame, until: datetime | None = None) -
     columns = ['source', 'market_id', 'market_name', 'market_series', 'state', 'start', 'end', 'duration']
     if state_changes.empty:
         return pd.DataFrame(columns=columns)
+    if until is not None and until.tzinfo is None:
+        raise ValueError(f'until must be timezone-aware (archive times are zoned), got {until!r}')
     df = state_changes.sort_values(['market_id', 'record_time']).copy()
     df['end'] = df.groupby('market_id')['record_time'].shift(-1)
     last = until if until is not None else df['record_time'].max()

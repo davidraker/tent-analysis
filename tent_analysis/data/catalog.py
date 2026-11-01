@@ -30,9 +30,20 @@ class Catalog:
             return pd.DataFrame(columns=['id', 'name', 'description', 'tn_id', 'type'])
         return df
 
+    def types_under(self, root: str) -> set[str]:
+        """Concrete component type names whose table chain includes `root` ('market', 'local_asset', 'neighbor', ...)."""
+        return {t for t in self.components['type'].unique() if root in self.reader.table_chain(t)}
+
     def _component_frame(self, type_name: str) -> pd.DataFrame:
         df = self.components
-        return df[df['type'].apply(lambda t: type_name in self.reader.table_chain(t))].copy()
+        return df[df['type'].isin(self.types_under(type_name))].copy()
+
+    @cached_property
+    def participants(self) -> pd.DataFrame:
+        """Local assets and neighbors: the components that schedule power and own curves. Owner filters apply to their
+        measurements; prices and other market-owned measurements are not owner-scoped."""
+        df = self.components
+        return df[df['type'].isin(self.types_under('local_asset') | self.types_under('neighbor'))].copy()
 
     @cached_property
     def market_series(self) -> pd.DataFrame:

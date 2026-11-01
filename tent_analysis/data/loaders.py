@@ -52,20 +52,25 @@ def load_measurements(source: Source, types: Iterable = None, owners: Sequence[s
 
 
 CURVE_COLUMNS = ['source', 'actor', 'run_id', 'curve_id', 'record_time', 'owner_id', 'owner_name', 'owner_type',
-                 'measurement_id', 'measurement_type', 'market_series', 'market_id', 'interval_id', 'interval_start',
-                 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty']
+                 'measurement_id', 'measurement_type', 'direction', 'market_series', 'market_id', 'interval_id',
+                 'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty']
 
 
 def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = None, history: bool = False,
                 as_of: datetime = None) -> pd.DataFrame:
-    """One row per vertex, with its curve version and owner. `types` default to every vertex-type measurement."""
+    """One row per vertex, with its curve version and owner. `types` default to every vertex-type measurement; a
+    filter that matches no measurement header yields an empty frame. `direction` is 'sent' or 'received' for the
+    vertices of a transactive signal (quantities as archived, see load_signals) and null for every other curve."""
     catalog = source.catalog
     headers = catalog.measurements
+    filtered = types is not None or owners is not None
     if types is not None:
         headers = headers[headers['measurement_type'].isin(_names(types))]
     if owners is not None:
         headers = headers[headers['owner_name'].isin(list(owners))]
-    curves = source.reader.curves(measurement_ids=list(headers['measurement_id']) if (types or owners) else None,
+    if headers.empty:
+        return pd.DataFrame(columns=CURVE_COLUMNS)
+    curves = source.reader.curves(measurement_ids=list(headers['measurement_id']) if filtered else None,
                                   latest_only=not history, as_of=as_of)
     records = []
     for curve in curves:
@@ -83,9 +88,19 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
                   on='measurement_id', how='left')
     markets = catalog.markets[['id', 'series_name']].rename(columns={'id': 'market_id', 'series_name': 'market_series'})
     df = df.merge(markets, on='market_id', how='left')
+    df['direction'] = df['measurement_id'].map(_signal_directions(source))
     df['source'] = source.label
     df['actor'] = df['run_id'].map(catalog.run_label)
     return df[CURVE_COLUMNS].sort_values(['owner_name', 'interval_start', 'record_time', 'record']).reset_index(drop=True)
+
+
+def _signal_directions(source: Source) -> dict:
+    """transactive_signal id (the signal's measurement id) -> 'sent' | 'received'."""
+    reader = source.reader
+    if not reader.has_table('transactive_signal'):
+        return {}
+    sig = reader.tables['transactive_signal']
+    return {row['id']: _enum_name(row['direction']) for row in reader.execute(select(sig.c.id, sig.c.direction))}
 
 
 def load_state_changes(source: Source) -> pd.DataFrame:

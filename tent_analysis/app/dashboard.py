@@ -7,7 +7,7 @@ import sys
 
 import streamlit as st
 
-from tent_analysis.app.views import Selection, Views, comparison
+from tent_analysis.app.views import Selection, Views, comparison, snap_interval
 from tent_analysis.data import Source
 
 PAGES = {'Overview': 'overview', 'Curves': 'curves', 'Negotiation': 'negotiation', 'Markets': 'markets',
@@ -47,11 +47,12 @@ def main():
     cat = current.catalog
     mode = st.sidebar.radio('Theme', ['light', 'dark'], horizontal=True)
     series = st.sidebar.multiselect('Market series', sorted(cat.market_series['name']))
-    owners = st.sidebar.multiselect('Owners', sorted(cat.components[cat.components['type'] != 'market']['name']))
+    owners = st.sidebar.multiselect('Owners', sorted(cat.participants['name']))
     sel = Selection(series=series, owners=owners, mode=mode,
                     interval_start=st.session_state.get('interval_start'), owner=st.session_state.get('owner'))
     page = st.sidebar.radio('Page', list(PAGES) + (['Compare'] if len(sources) > 1 else []))
     st.header(f'{current.label}: {page}')
+    intervals = []
     if page == 'Compare':
         baseline = sources[labels.index(st.sidebar.selectbox('Baseline', labels))]
         figures = comparison(sources, baseline, sel)
@@ -77,11 +78,11 @@ def main():
         st.subheader(name)
         event = st.plotly_chart(fig, use_container_width=True, on_select='rerun', selection_mode='points',
                                 key=f'{page}:{name}')
-        picked = _selected_point(event)
-        if picked is not None and page == 'Overview':
+        picked = snap_interval(_selected_point(event), intervals) if page == 'Overview' else None
+        if picked is not None:
             # Linked view: clicking a point on a timeline focuses that delivery interval for Curves and Negotiation.
             st.session_state['interval_start'] = picked
-            st.caption(f'Focused interval set to {picked}. Open Curves or Negotiation to drill in.')
+            st.caption(f'Focused interval set to {picked:%Y-%m-%d %H:%M}. Open Curves or Negotiation to drill in.')
 
 
 if __name__ == '__main__' or st.runtime.exists():

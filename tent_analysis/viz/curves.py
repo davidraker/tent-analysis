@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.analysis.curves import POSITIONS, from_local_side, latest_version
+from tent_analysis.analysis.curves import POSITIONS, from_local_side, single_curve
 from tent_analysis.viz.theme import Theme, color_map
 from tent_analysis.viz.timelines import _alpha, _row_titles
 
@@ -59,11 +59,27 @@ def curve_figure(curve: pd.DataFrame, history: pd.DataFrame | None = None, margi
     return fig
 
 
-def curve_multiples(curves: pd.DataFrame, owner: str, prices: pd.DataFrame | None = None, max_panels: int = 12,
-                    columns: int = 3, colors: dict | None = None, theme: Theme | None = None) -> go.Figure:
-    """Small multiples of one owner's curve across delivery intervals, shared axes, cleared price marked in each."""
+def cleared_price_for(prices: pd.DataFrame | None, curve: pd.DataFrame) -> float | None:
+    """The cleared price of the curve's own market series and interval (cleared_prices output), or None."""
+    if prices is None or prices.empty or curve.empty:
+        return None
+    series, start = curve['market_series'].iloc[0], curve['interval_start'].iloc[0]
+    if pd.isna(series):
+        return None
+    hit = prices[(prices['market_series'] == series) & (prices['interval_start'] == start)]
+    return float(hit['price'].iloc[-1]) if not hit.empty else None
+
+
+def curve_multiples(curves: pd.DataFrame, owner: str, measurement_type: str | None = None,
+                    prices: pd.DataFrame | None = None, max_panels: int = 12, columns: int = 3,
+                    colors: dict | None = None, theme: Theme | None = None, title: str | None = None) -> go.Figure:
+    """Small multiples of one owner's curve across delivery intervals, shared axes, the cleared price of the curve's
+    own series marked in each panel. `curves` must hold one curve per interval for the owner (filter by
+    `measurement_type`, or pass one measurement's rows); several raise through single_curve."""
     theme = theme or Theme()
-    df = latest_version(curves[curves['owner_name'] == owner])
+    df = curves[curves['owner_name'] == owner]
+    if measurement_type is not None:
+        df = df[df['measurement_type'] == measurement_type]
     starts = sorted(df['interval_start'].unique())[:max_panels]
     rows = max(1, -(-len(starts) // columns))
     color = (colors or color_map(curves['owner_name'], theme)).get(owner, theme.categorical[0])
@@ -71,18 +87,17 @@ def curve_multiples(curves: pd.DataFrame, owner: str, prices: pd.DataFrame | Non
                         vertical_spacing=0.08, subplot_titles=[pd.Timestamp(s).strftime('%b %d %H:%M') for s in starts])
     for i, start in enumerate(starts):
         r, c = divmod(i, columns)
-        part = df[df['interval_start'] == start]
+        part = single_curve(df[df['interval_start'] == start])
         for trace in _curve_traces(part, owner, color, theme, showlegend=(i == 0)):
             fig.add_trace(trace, row=r + 1, col=c + 1)
-        if prices is not None and not prices.empty:
-            p = prices[prices['interval_start'] == start]
-            if not p.empty:
-                fig.add_vline(x=float(p['price'].iloc[-1]), line=dict(color=theme.ink['secondary'], width=1, dash='dot'),
-                              row=r + 1, col=c + 1)
+        cleared = cleared_price_for(prices, part)
+        if cleared is not None:
+            fig.add_vline(x=cleared, line=dict(color=theme.ink['secondary'], width=1, dash='dot'), row=r + 1, col=c + 1)
     fig.update_annotations(font=dict(size=11, color=theme.ink['secondary']))
     fig.update_xaxes(title_text='$/kWh', row=rows, col=1)
     fig.update_yaxes(title_text='kW', col=1)
-    theme.apply(fig, title=f'{owner}: curves by delivery interval', height=max(360, 230 * rows + 80))
+    theme.apply(fig, title=title or f'{owner}: {measurement_type or "curves"} by delivery interval',
+                height=max(360, 230 * rows + 80))
     fig.update_layout(hovermode='closest', showlegend=False, margin=dict(t=80))
     return fig
 

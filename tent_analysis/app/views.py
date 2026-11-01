@@ -9,13 +9,14 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus, convergence,
-                                    curve_at, energy_cost, horizon_matrix, net_curve, net_power, price_revisions,
-                                    scheduled_power, signal_pairs, state_segments)
+                                    energy_cost, horizon_matrix, net_curve, net_power, price_revisions,
+                                    scheduled_power, signal_pairs, single_curve, state_segments)
 from tent_analysis.data import (Source, load_curves, load_historian_topics, load_measurements, load_meter_readings,
                                 load_signals, load_state_changes)
-from tent_analysis.viz import (Theme, bid_position_figure, color_map, consensus_strip, convergence_panel, cost_bars,
-                               curve_figure, curve_multiples, device_panel, horizon_heatmap, market_timeline,
-                               negotiation_trace, power_timeline, price_timeline, run_comparison, signal_comparison)
+from tent_analysis.viz import (Theme, bid_position_figure, cleared_price_for, color_map, consensus_strip,
+                               convergence_panel, cost_bars, curve_figure, curve_multiples, device_panel,
+                               horizon_heatmap, market_timeline, negotiation_trace, power_timeline, price_timeline,
+                               run_comparison, signal_comparison)
 
 
 @dataclass
@@ -34,25 +35,36 @@ class Selection:
         return Theme(self.mode)
 
 
+def snap_interval(picked, intervals: list) -> pd.Timestamp | None:
+    """The known delivery interval nearest to a clicked x value. Plotly hands the x back as a string in the axis's
+    wall-clock time (zone stripped), so a naive value is localised to the intervals' zone and an aware one converted."""
+    if picked is None or not intervals:
+        return None
+    zone = pd.Timestamp(intervals[0]).tz
+    t = pd.Timestamp(picked)
+    t = t.tz_localize(zone) if t.tz is None else t.tz_convert(zone)
+    return min((pd.Timestamp(i) for i in intervals), key=lambda i: abs(i - t))
+
+
 class Views:
     def __init__(self, source: Source, selection: Selection):
         self.source, self.sel = source, selection
         self.theme = selection.theme
         cat = source.catalog
-        reader = source.reader
-        plotted = cat.components[cat.components['type'].apply(
-            lambda t: any(root in reader.table_chain(t) for root in ('local_asset', 'neighbor')))]
         # One fixed colour per plotted entity and market series, assigned once per source so pages never repaint.
-        self.colors = color_map(list(plotted['name']) + list(cat.market_series['name']), self.theme)
+        self.colors = color_map(list(cat.participants['name']) + list(cat.market_series['name']), self.theme)
+        self.market_types = cat.types_under('market')
 
     # ------------------------------------------------------------------ data
     def _filter(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply the series and owner selections. The owner selection is scoped to participants (assets and neighbors);
+        market-owned rows such as MarginalPrice stay, since every page needs the price regardless of owner."""
         if df.empty:
             return df
         if self.sel.series and 'market_series' in df:
             df = df[df['market_series'].isin(self.sel.series)]
         if self.sel.owners and 'owner_name' in df:
-            df = df[df['owner_name'].isin(self.sel.owners)]
+            df = df[df['owner_name'].isin(self.sel.owners) | df['owner_type'].isin(self.market_types)]
         return df
 
     def measurements(self, types, history=False) -> pd.DataFrame:
@@ -91,17 +103,26 @@ class Views:
         prices = cleared_prices(self.measurements(['MarginalPrice']))
         owners = sorted(curves['owner_name'].dropna().unique())
         owner = self.sel.owner if self.sel.owner in owners else owners[0]
-        starts = sorted(curves[curves['owner_name'] == owner]['interval_start'].unique())
-        if not starts:
-            return {}
+        mine = curves[curves['owner_name'] == owner]
+        starts = sorted(mine['interval_start'].unique())
         start = self.sel.interval_start if self.sel.interval_start in set(starts) else starts[0]
-        own = curves[(curves['owner_name'] == owner) & (curves['interval_start'] == start)]
-        latest = curve_at(curves, owner, start)
-        price_rows = prices[prices['interval_start'] == start]
-        marginal = float(price_rows['price'].iloc[0]) if not price_rows.empty else None
-        figures = {f'{owner} at {pd.Timestamp(start):%b %d %H:%M}':
-                   curve_figure(latest, history=own, marginal_price=marginal, name=owner,
-                                color=self.colors.get(owner), theme=self.theme)}
+        figures = {}
+        # An owner may hold several curves for one interval (active vertices of an asset; a neighbor's sent and
+        # received signal vertices): one measurement each, drawn with the history of that curve id only.
+        at = mine[mine['interval_start'] == start]
+        for measurement_id in at.sort_values(['measurement_type', 'direction']).drop_duplicates('measurement_id')['measurement_id']:
+            rows = mine[mine['measurement_id'] == measurement_id]
+            latest = single_curve(rows[rows['interval_start'] == start]).sort_values(['price', 'quantity'])
+            own = rows[rows['curve_id'] == latest['curve_id'].iloc[0]]
+            kind = str(latest['measurement_type'].iloc[0])
+            if pd.notna(latest['direction'].iloc[0]):
+                kind += f" ({latest['direction'].iloc[0]})"
+            figures[f'{owner} {kind} at {pd.Timestamp(start):%b %d %H:%M}'] = curve_figure(
+                latest, history=own, marginal_price=cleared_price_for(prices, latest), name=owner,
+                color=self.colors.get(owner), theme=self.theme, title=f'{kind}: {owner}')
+            if rows['interval_start'].nunique() > 1:
+                figures[f'{owner} {kind} across intervals'] = curve_multiples(
+                    rows, owner, prices=prices, colors=self.colors, theme=self.theme, title=f'{owner}: {kind} by delivery interval')
         system = curves[curves['measurement_type'] == 'SystemVertex']
         if not system.empty:
             series = self.sel.series[0] if self.sel.series else system['market_series'].dropna().iloc[0]
@@ -110,9 +131,6 @@ class Views:
                 figures[f'System curve, {series}'] = curve_figure(net, marginal_price=crossing['price'] if crossing else None,
                                                                  balance=crossing, name=f'{series} system',
                                                                  color=self.colors.get(series), theme=self.theme)
-        if len(starts) > 1:
-            figures[f'{owner} across intervals'] = curve_multiples(curves, owner, prices=prices, colors=self.colors,
-                                                                   theme=self.theme)
         return figures
 
     def negotiation(self) -> dict[str, go.Figure]:

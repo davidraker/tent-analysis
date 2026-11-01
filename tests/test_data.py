@@ -46,6 +46,24 @@ def test_load_curves(source):
     versions = history.groupby(['curve_id', 'record_time']).size()
     assert len(versions) == len(latest.groupby(['curve_id', 'record_time'])) + 1
     assert sorted(versions[versions.index.get_level_values(0) == one['curve_id'].iloc[0]]) == [2, 4]
+    # Signal vertices carry their direction; every other curve has none.
+    signals = latest[latest['measurement_type'] == 'SignalVertex']
+    assert set(signals['direction']) == {'sent', 'received'} and signals.groupby('direction')['curve_id'].nunique().eq(4).all()
+    assert latest.loc[latest['measurement_type'] != 'SignalVertex', 'direction'].isna().all()
+
+
+def test_load_curves_filters(source):
+    everything = load_curves(source)
+    system = load_curves(source, types=['SystemVertex'])
+    assert not system.empty and set(system['measurement_type']) == {'SystemVertex'}
+    owner = everything[everything['measurement_type'] == 'ActiveVertex']['owner_name'].iloc[0]
+    mine = load_curves(source, owners=[owner])
+    assert set(mine['owner_name']) == {owner} and len(mine) < len(everything)
+    # An unmatched filter is empty, not everything with null owners; an empty type list matches nothing.
+    for unmatched in (dict(types=['NoSuchVertex']), dict(owners=['nobody']), dict(types=[]), dict(owners=[])):
+        frame = load_curves(source, **unmatched)
+        assert frame.empty and list(frame.columns) == CURVE_COLUMNS, unmatched
+    assert (load_curves(source, types=['ActiveVertex'], owners=['nobody'])).empty
 
 
 def test_state_changes_and_meters(source):
