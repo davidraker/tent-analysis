@@ -108,10 +108,11 @@ builds from them (`tent.registry.configuration_schema`). The same logic drives t
   placeholders still in the file (strings starting `<FILL:`) are reported first, as `[placeholders]`. Construction
   runs only when the earlier levels pass. A class from a package that is not installed here (the VOLTTRON agent's data
   manager, meter points and actuation managers) is reported as `[unchecked]`, not as a problem. The host application's
-  keys (the agent reads and removes them before TENT sees the file: a transactive neighbor's `sender`, the
-  `identity@instance` the platform must present for its signals) are stripped before checking in the same way and
-  listed as `[host]` entries; the mapping comes from the agent package's `HOST_KEYS` when it is installed, else from
-  the tool's own copy. Exit status 1 when there are problems.
+  keys (the agent reads and removes them before TENT sees the file: `db_topic`, `subscribe_all_platforms`, `topics`
+  and `slow_iteration_warning` at the top level, and a transactive neighbor's `sender`, the `identity@instance` the
+  platform must present for its signals) are stripped before checking in the same way and listed as `[host]` entries;
+  the mapping comes from the agent package's `HOST_KEYS` when it is installed, else from the tool's own copy of it.
+  Exit status 1 when there are problems.
 - `diff` compares two configurations structurally, components matched by list and name, and classifies every change
   as `[in place]` (a running node takes it through `reconfigure`) or `[rebuild]` by the reconfigurable markers of the
   models: node settings, the data manager, components added or removed, class changes, market timing, model-frame

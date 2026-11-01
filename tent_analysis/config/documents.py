@@ -112,19 +112,20 @@ def placeholders(value, path: str = '') -> list[tuple[str, str]]:
 
 
 # The host application's keys in a node configuration, by node list ('' for the top level). The TransactiveNodeAgent
-# reads these and removes them before the configuration reaches TENT, whose models refuse what they do not declare.
-# Source of truth: the agent package's own HOST_KEYS export when it is importable (see host_keys); until the agent
-# exports one, this mapping is the tool's. The top-level keys are also fields of TENT's node model (TENT accepts them
-# for the host), so only the per-list keys are stripped before validation.
+# reads these and removes them before the configuration reaches TENT, whose models refuse what they do not declare
+# (TENT's node model no longer carries db_topic, subscribe_all_platforms and topics; they were the agent's all along).
+# Source of truth: the agent package's HOST_KEYS export (transactive_node.host_keys, importable without the platform)
+# when the package is installed; this copy is used when it is not and must match it (a test compares the two when the
+# agent's source tree is beside this repository).
 DEFAULT_HOST_KEYS: dict[str, frozenset[str]] = {
-    '': frozenset({'db_topic', 'subscribe_all_platforms', 'topics'}),
+    '': frozenset({'db_topic', 'subscribe_all_platforms', 'topics', 'slow_iteration_warning'}),
     'neighbors': frozenset({'sender'}),  # identity@instance the platform must present for the neighbor's signals
 }
 
 
 def host_keys() -> dict[str, frozenset[str]]:
     """List name ('' for the top level) -> the host application's keys there: the agent package's HOST_KEYS when the
-    package is installed and exports one, else DEFAULT_HOST_KEYS."""
+    package is installed, else DEFAULT_HOST_KEYS."""
     try:
         from transactive_node import HOST_KEYS as declared  # noqa: PLC0415  optional host package
     except ImportError:
@@ -133,12 +134,16 @@ def host_keys() -> dict[str, frozenset[str]]:
 
 
 def host_entries(config: dict) -> list[tuple[str, str, object]]:
-    """(path, key, value) of every host key present in the component lists of `config` (the keys TENT would refuse)."""
-    found = []
+    """(path, key, value) of every host key present in `config`: top-level keys (path '') first, then the component
+    lists in the node's construction order."""
     keys_by_list = host_keys()
-    for list_name in sorted(keys_by_list, key=lambda name: (list(NODE_LIST_ORDER).index(name) if name in NODE_LIST_ORDER else len(NODE_LIST_ORDER), name)):
+    order = sorted(keys_by_list, key=lambda name: (name != '', NODE_LIST_ORDER.index(name) if name in NODE_LIST_ORDER
+                                                   else len(NODE_LIST_ORDER), name))
+    found = []
+    for list_name in order:
         keys = keys_by_list[list_name]
         if not list_name:
+            found.extend(('', key, config[key]) for key in sorted(keys) if key in config)
             continue
         entries = config.get(list_name)
         if isinstance(entries, list):
@@ -149,9 +154,11 @@ def host_entries(config: dict) -> list[tuple[str, str, object]]:
 
 
 def strip_host_keys(config: dict) -> dict:
-    """A copy of `config` without the host application's per-list keys (host_entries), as the host hands it to TENT."""
-    result = dict(config)
-    for list_name, keys in host_keys().items():
+    """A copy of `config` without the host application's keys (host_entries), as the host hands it to TENT. The agent's
+    own strip_host_keys returns the values it took out keyed by entry name; this one keeps the tool's path convention."""
+    keys_by_list = host_keys()
+    result = {k: v for k, v in config.items() if k not in keys_by_list.get('', ())}
+    for list_name, keys in keys_by_list.items():
         entries = result.get(list_name) if list_name else None
         if isinstance(entries, list):
             result[list_name] = [{k: v for k, v in e.items() if k not in keys} if isinstance(e, dict) else e for e in entries]

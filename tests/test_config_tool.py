@@ -78,8 +78,10 @@ def test_deployed_configurations_validate(path):
     # as a host key rather than a problem.
     bound = [(f'neighbors[{i}]', 'sender', n['sender']) for i, n in enumerate(config['neighbors']) if 'sender' in n]
     assert bound, 'the deployed files bind every transactive neighbor to a sender'
-    assert [(h.path, h.key, h.value) for h in report.hosts] == bound
-    assert all('@' in h.value for h in report.hosts) and '[host] neighbors[0].sender:' in report.text()
+    top = [('', key, config[key]) for key in sorted(documents.DEFAULT_HOST_KEYS['']) if key in config]
+    assert top, "the deployed files carry the agent's top-level keys"
+    assert [(h.path, h.key, h.value) for h in report.hosts] == top + bound
+    assert all('@' in h.value for h in report.hosts if h.key == 'sender') and '[host] neighbors[0].sender:' in report.text()
     assert all('sender' not in n for n in documents.prepared(config)['neighbors'])
     changed = deepcopy(config)
     changed['neighbors'][0]['sender'] = 'someone@elsewhere'
@@ -551,21 +553,61 @@ def test_docs_page_lists_every_registered_class(tmp_path):
         render('html')
 
 
+def test_top_level_host_keys_are_stripped_and_listed(sample):
+    hosted = {**strip_docs(sample), 'db_topic': 'tns', 'subscribe_all_platforms': True}  # as the agent's files carry them
+    assert not set(documents.prepared(hosted)) & documents.DEFAULT_HOST_KEYS['']
+    report = checks.validate(hosted)
+    assert report.ok
+    assert [(h.path, h.key, h.value) for h in report.hosts] == [('', 'db_topic', 'tns'), ('', 'subscribe_all_platforms', True)]
+    assert "[host] db_topic: 'tns' is read by the host application, not by TENT" in report.text()
+    assert report.text().endswith('0 problems (placeholders, structure, semantics checked), 2 host keys')
+    changed = {**hosted, 'db_topic': 'other', 'slow_iteration_warning': 5}
+    changes = diff_configs(hosted, changed)
+    assert [(c.path, c.kind, c.reconfigurable) for c in changes] == [('db_topic', 'changed', None), ('slow_iteration_warning', 'added', None)]
+    assert all('host application key' in c.reason for c in changes)
+    assert ('', 'slow_iteration_warning', 5) in documents.host_entries({**hosted, 'slow_iteration_warning': 5})
+
+
+def test_fallback_host_keys_match_the_agents_export(monkeypatch):
+    import importlib
+    import sys
+    source = REPO / 'code' / 'TransactiveNodeAgent' / 'src'
+    if not (source / 'transactive_node' / 'host_keys.py').exists():
+        pytest.skip(f'the agent source tree is not beside this repository ({source}); the fallback cannot be compared')
+    monkeypatch.syspath_prepend(str(source))
+    for name in [m for m in sys.modules if m == 'transactive_node' or m.startswith('transactive_node.')]:
+        monkeypatch.delitem(sys.modules, name)
+    agent = importlib.import_module('transactive_node')
+    monkeypatch.setitem(sys.modules, 'transactive_node', agent)  # restored (removed) at teardown
+    assert {k: frozenset(v) for k, v in agent.HOST_KEYS.items()} == documents.DEFAULT_HOST_KEYS, \
+        'DEFAULT_HOST_KEYS must match transactive_node.HOST_KEYS; update the copy'
+    assert documents.host_keys() == documents.DEFAULT_HOST_KEYS, 'with the agent installed its export is used'
+    hosted = {**load(SAMPLE), 'db_topic': 'tns', 'subscribe_all_platforms': True}
+    hosted['neighbors'][0]['sender'] = 'tn.city@city'
+    tent_side, host_values = agent.strip_host_keys(hosted)
+    assert tent_side == documents.prepared(hosted), "the agent's strip and the tool's agree on what reaches TENT"
+    assert host_values[''] == {'db_topic': 'tns', 'subscribe_all_platforms': True}
+    assert host_values['neighbors'] == {'CoR': {'sender': 'tn.city@city'}}
+
+
 def test_host_keys_come_from_the_agent_when_it_exports_them(monkeypatch, sample):
     import sys
     import types
-    assert documents.host_keys() == documents.DEFAULT_HOST_KEYS, 'the agent package is not installed here'
+    monkeypatch.setitem(sys.modules, 'transactive_node', None)  # not importable, whatever is installed
+    assert documents.host_keys() == documents.DEFAULT_HOST_KEYS
     assert documents.host_keys()['neighbors'] == {'sender'} and 'db_topic' in documents.host_keys()['']
     agent = types.ModuleType('transactive_node')
-    agent.HOST_KEYS = {'': {'db_topic'}, 'neighbors': {'sender', 'relay'}, 'meter_points': {'poll_topic'}}
+    agent.HOST_KEYS = {'': {'db_topic', 'subscribe_all_platforms'}, 'neighbors': {'sender', 'relay'},
+                       'meter_points': {'poll_topic'}}
     monkeypatch.setitem(sys.modules, 'transactive_node', agent)
-    assert documents.host_keys() == {'': frozenset({'db_topic'}), 'neighbors': frozenset({'sender', 'relay'}),
-                                     'meter_points': frozenset({'poll_topic'})}
-    hosted = deepcopy(sample)
+    assert documents.host_keys() == {'': frozenset({'db_topic', 'subscribe_all_platforms'}),
+                                     'neighbors': frozenset({'sender', 'relay'}), 'meter_points': frozenset({'poll_topic'})}
+    hosted = {**deepcopy(sample), 'db_topic': 'tns', 'subscribe_all_platforms': True}
     hosted['neighbors'][1]['relay'] = 'hub'
     hosted['meter_points'][0]['poll_topic'] = 'devices/campus/meter'
     report = checks.validate(hosted)
-    assert report.ok and [(h.path, h.key) for h in report.hosts] == [('meter_points[0]', 'poll_topic'), ('neighbors[1]', 'relay')]
-    assert report.text().endswith('0 problems (placeholders, structure, semantics checked), 2 host keys')
-    monkeypatch.delitem(sys.modules, 'transactive_node')
+    assert report.ok and [(h.path, h.key) for h in report.hosts] == \
+        [('', 'db_topic'), ('', 'subscribe_all_platforms'), ('meter_points[0]', 'poll_topic'), ('neighbors[1]', 'relay')]
+    assert report.text().endswith('0 problems (placeholders, structure, semantics checked), 4 host keys')
+    monkeypatch.setitem(sys.modules, 'transactive_node', None)
     assert not checks.validate(hosted).ok, "without the agent's declaration the keys are unknown to TENT"

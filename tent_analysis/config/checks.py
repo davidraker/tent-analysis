@@ -65,7 +65,8 @@ class HostKey:
     value: object
 
     def __str__(self) -> str:
-        return f'[host] {self.path}.{self.key}: {self.value!r} is read by the host application, not by TENT'
+        where = f'{self.path}.{self.key}' if self.path else self.key
+        return f'[host] {where}: {self.value!r} is read by the host application, not by TENT'
 
 
 @dataclass

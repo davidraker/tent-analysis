@@ -45,6 +45,9 @@ def diff_configs(old: dict, new: dict) -> list[Change]:
         elif key == 'data_manager':
             if old.get(key) != new.get(key):
                 changes.append(_change(key, old, new, False, 'the data manager is not reconfigurable'))
+        elif key in host_keys().get('', ()):
+            if old.get(key, _MISSING) != new.get(key, _MISSING):
+                changes.append(_change(key, old, new, None, 'a host application key, not a TENT setting; the host decides'))
         elif old.get(key) != new.get(key):
             reason = 'node settings are not reconfigurable' if key in node_props else 'not a configuration key'
             changes.append(_change(key, old, new, False if key in node_props else None, reason))
