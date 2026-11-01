@@ -80,7 +80,8 @@ def test_order_views_exist_only_with_orders(source, pacific, historian):
     assert {t.name for t in bars.data} == {'MATCHED', 'SUPERSEDED', 'REVISED_STANDING_ORDER'} and bars.layout.barmode == 'stack'
     quantity = figures['Matched quantity']
     assert any(t.name.startswith('matched:') for t in quantity.data) and any(t.name.startswith('match price') for t in quantity.data)
-    assert quantity.layout.xaxis2.title.text == 'Delivery interval start (UTC)'
+    assert quantity.layout.xaxis3.title.text == 'Delivery interval start (UTC)'
+    assert [a.text for a in quantity.layout.annotations] == ['<b>Matched</b>', '<b>Standing</b>', '<b>Match price</b>']
     assert Views(pacific, Selection()).orders() == {}
     assert Views(source, Selection(series=['Day-Ahead_Auction'])).orders() == {}, 'no orders in an auction series'
     assert Views(source, Selection(start=pd.Timestamp('2030-01-01T00:00Z'))).orders() == {}

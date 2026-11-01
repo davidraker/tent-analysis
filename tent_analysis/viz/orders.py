@@ -45,12 +45,13 @@ def order_status_bars(counts: pd.DataFrame, theme: Theme | None = None, title: s
 
 def matched_quantity_figure(matched: pd.DataFrame, theme: Theme | None = None,
                             title: str = 'Matched and standing quantity') -> go.Figure:
-    """Top row (kW): matched quantity as bars with standing supply and demand as step lines; bottom row ($/kWh): the
-    quantity-weighted match price where it is finite (matched_quantities output)."""
+    """Three rows sharing the interval axis: matched quantity as bars (kW), standing supply and demand as step lines
+    (kW, their own row since a standing book can dwarf what traded), and the quantity-weighted match price where it is
+    finite ($/kWh). From matched_quantities output."""
     theme = theme or Theme()
     df = matched.sort_values('interval_start')
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35], vertical_spacing=0.08)
-    _row_titles(fig, ['Quantity', 'Match price'], theme)
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.4, 0.3, 0.3], vertical_spacing=0.07)
+    _row_titles(fig, ['Matched', 'Standing', 'Match price'], theme)
     for name, part in df.groupby('market_series', sort=True):
         fig.add_trace(go.Bar(x=part['interval_start'], y=part['matched_kw'], name=f'matched: {text(name)}',
                              marker=dict(color=STATUS['good'], line=dict(color=theme.ink['surface'], width=1)),
@@ -59,19 +60,20 @@ def matched_quantity_figure(matched: pd.DataFrame, theme: Theme | None = None,
                       row=1, col=1)
         fig.add_trace(go.Scatter(x=part['interval_start'], y=part['standing_supply_kw'], mode='lines', name='standing supply',
                                  line=dict(color=theme.categorical[0], **LINE),
-                                 hovertemplate='%{y:,.1f} kW standing supply<extra>' + text(name) + '</extra>'), row=1, col=1)
+                                 hovertemplate='%{y:,.1f} kW standing supply<extra>' + text(name) + '</extra>'), row=2, col=1)
         fig.add_trace(go.Scatter(x=part['interval_start'], y=part['standing_demand_kw'], mode='lines', name='standing demand',
                                  line=dict(color=theme.categorical[1], **LINE),
-                                 hovertemplate='%{y:,.1f} kW standing demand<extra>' + text(name) + '</extra>'), row=1, col=1)
+                                 hovertemplate='%{y:,.1f} kW standing demand<extra>' + text(name) + '</extra>'), row=2, col=1)
         priced = part[part['match_price'].notna()]
         if not priced.empty:
             fig.add_trace(go.Scatter(x=priced['interval_start'], y=priced['match_price'], mode='lines+markers',
                                      name=f'match price: {text(name)}', line=dict(color=theme.ink['primary'], width=2),
                                      marker=dict(size=7, color=theme.ink['primary'], line=dict(color=theme.ink['surface'], width=2)),
-                                     hovertemplate='%{y:.4f} $/kWh<extra>' + text(name) + '</extra>'), row=2, col=1)
+                                     hovertemplate='%{y:.4f} $/kWh<extra>' + text(name) + '</extra>'), row=3, col=1)
     fig.update_layout(barmode='group', bargap=0.3)
     fig.update_yaxes(title_text='kW', row=1, col=1)
-    fig.update_yaxes(title_text='$/kWh', row=2, col=1)
-    fig.update_xaxes(title_text=time_axis('Delivery interval start', df['interval_start']), row=2, col=1)
-    theme.apply(fig, title=title, height=520)
+    fig.update_yaxes(title_text='kW', row=2, col=1)
+    fig.update_yaxes(title_text='$/kWh', rangemode='tozero', row=3, col=1)
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', df['interval_start']), row=3, col=1)
+    theme.apply(fig, title=title, height=620)
     return fig
