@@ -1,11 +1,11 @@
 # tent-analysis
 
-Analysis and visualisation for TENT archives: the SQLite or PostgreSQL databases written by `tent.data_manager`, with
-or without a VOLTTRON SQL historian (`topics`/`data`) in the same database.
+Analysis and visualisation for TENT archives: the SQLite or PostgreSQL databases a TENT node writes through its data
+manager (the `lib-archivable` library), with or without a VOLTTRON SQL historian (`topics`/`data`) in the same database.
 
 ## Install
 
-    pip install -e ../TENT -e ".[dev]"
+    pip install -e ../tns-utilities/lib-archivable -e ../TENT -e ".[dev]"
 
 Extras: `export` (Kaleido, for `report --format png|pdf`; needs a Chrome or Chromium, see `plotly.io.get_chrome`),
 `parquet` (pyarrow, for `export --out file.parquet`), `postgres` (psycopg), `app` (Streamlit, for `dashboard`),
@@ -24,7 +24,8 @@ Passwords are never printed or used in labels: the default label is the database
 the host.
 
 - `inspect` prints the archive schema version the database was written with (`tent.data_manager.ARCHIVE_SCHEMA_VERSION`
-  of the writing TENT; version 1, without an `archive_schema` table, is everything before 2 November 2026), then lists
+  of the writing TENT, from the `archive_schema` row of application `TENT`; version 1, without that row, is everything
+  before 2 November 2026) and names any other application that writes into the database, then lists
   runs (with their configured time zone), components by type, measurement headers by owner type, and the order book's
   size and latest statuses when the archive has one.
 - `export` writes one tidy frame as CSV or Parquet. `--what` is one of `measurements` (latest version per interval),

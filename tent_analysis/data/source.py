@@ -4,7 +4,7 @@ from functools import cached_property
 from pathlib import PurePath
 
 from sqlalchemy.engine import make_url
-from tent.data_manager.local_data_manager import LocalDataManager
+from tent.data_manager.reader import TentArchive, open_archive
 
 HISTORIAN_TABLES = ('topics', 'data')  # VOLTTRON SQL historian tables that may share the database
 
@@ -52,13 +52,13 @@ class Source:
     url: str
     label: str | None = None
     tz: str | None = None
-    reader: LocalDataManager = field(default=None, repr=False)
+    reader: TentArchive = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.reader is None:
             # Only TENT's own tables are registered; of anything else in the database, only the historian tables are
             # reflected, and only when present.
-            self.reader = LocalDataManager.from_url(self.url, reflect_unknown=False)
+            self.reader = open_archive(self.url, reflect_unknown=False)
             if set(HISTORIAN_TABLES) <= self.reader.present_tables:
                 self.reader.reflect_unknown_tables(only=HISTORIAN_TABLES)
         if self.label is None:

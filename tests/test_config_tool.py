@@ -74,9 +74,12 @@ def test_deployed_configurations_validate(path):
     structure = checks.validate_structure(config)
     assert structure.ok, structure.text()  # the deployed files follow the schema exactly (weekday names lowercase)
     report = checks.validate(config)
-    # Classes from the VOLTTRON agent package are reported as unchecked here, never as problems.
-    assert all('transactive_node' in (u.module_name or '') or 'transactive_node' in u.reason for u in report.unchecked), report.unchecked
-    assert bool(report.unchecked) == ('transactive_node' in Path(path).read_text())
+    # Classes from outside TENT (the VOLTTRON agent package and the volttron_archivable data manager) are reported as
+    # unchecked here, never as problems.
+    outside = ('transactive_node', 'volttron_archivable')
+    assert all(any(name in (u.module_name or '') or name in u.reason for name in outside) for u in report.unchecked), \
+        report.unchecked
+    assert bool(report.unchecked) == any(name in Path(path).read_text() for name in outside)
 
 
 def test_structure_reports_the_entry_path_and_the_schema_message(sample):
