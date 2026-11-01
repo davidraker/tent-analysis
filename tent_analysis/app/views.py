@@ -3,20 +3,21 @@ Dashboard logic without Streamlit: a Selection describes what the user picked, a
 plus a Selection into figures. The Streamlit script only draws widgets and calls these, so they are testable.
 """
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 
 from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus, convergence,
-                                    energy_cost, horizon_matrix, net_curve, net_power, price_revisions,
-                                    scheduled_power, signal_pairs, single_curve, state_segments)
+                                    energy_cost, horizon_matrix, matched_quantities, net_curve, net_power, order_book,
+                                    order_counts, price_revisions, scheduled_power, signal_pairs, single_curve,
+                                    state_segments)
 from tent_analysis.data import (Source, default_label, load_curves, load_historian_topics, load_measurements,
-                                load_meter_readings, load_signals, load_state_changes)
+                                load_meter_readings, load_orders, load_signals, load_state_changes)
 from tent_analysis.viz import (Theme, bid_position_figure, cleared_price_for, color_map, consensus_strip,
                                convergence_panel, cost_bars, curve_figure, curve_multiples, device_panel,
-                               horizon_heatmap, market_timeline, negotiation_trace, power_timeline, price_timeline,
-                               run_comparison, signal_comparison)
+                               horizon_heatmap, market_timeline, matched_quantity_figure, negotiation_trace,
+                               order_status_bars, power_timeline, price_timeline, run_comparison, signal_comparison)
 
 
 @dataclass
@@ -234,9 +235,43 @@ class Views:
                 figures[f'Cost by {by}'] = cost_bars(agg, by, colors=self.colors, theme=self.theme)
         return figures
 
-    def devices(self, pattern: str = '%') -> dict[str, go.Figure]:
+    def orders(self) -> dict[str, go.Figure]:
+        """The order book of MatchingEngine markets: present only when the archive holds orders."""
+        if self.source.catalog.order_count == 0:
+            return {}
+        orders = load_orders(self.source, history=True)
+        if self.sel.series:
+            orders = orders[orders['market_series'].isin(self.sel.series)]
+        if self.sel.start is not None:
+            orders = orders[orders['interval_start'] >= self.sel.start]
+        if self.sel.end is not None:
+            orders = orders[orders['interval_start'] < self.sel.end]
+        book = order_book(orders)
+        if book.empty:
+            return {}
+        return {'Orders by status': order_status_bars(order_counts(book), theme=self.theme),
+                'Matched quantity': matched_quantity_figure(matched_quantities(book), theme=self.theme)}
+
+    def devices(self, pattern: str = '%', points_per_figure: int = 12) -> dict[str, go.Figure]:
+        """Historian points matching an SQL LIKE pattern, one panel per point name and one line per device, in figures
+        of at most `points_per_figure` panels. Topics whose values are not numeric (JSON records, text) are left out,
+        and the figure title says how many."""
         topics = load_historian_topics(self.source, pattern)
-        return {'Device points': device_panel(topics, theme=self.theme)} if not topics.empty else {}
+        if topics.empty:
+            return {}
+        numeric = topics[pd.to_numeric(topics['value'], errors='coerce').notna() | topics['value'].isna()]
+        omitted = topics['topic'].nunique() - numeric['topic'].nunique()
+        if numeric.empty:
+            return {}
+        points = sorted(numeric['topic'].str.rsplit('/', n=1).str[-1].unique())
+        chunks = [points[i:i + points_per_figure] for i in range(0, len(points), points_per_figure)]
+        figures = {}
+        for n, chunk in enumerate(chunks, start=1):
+            part = numeric[numeric['topic'].str.rsplit('/', n=1).str[-1].isin(chunk)]
+            name = 'Device points' if len(chunks) == 1 else f'Device points ({n} of {len(chunks)})'
+            title = name + (f', {omitted} non-numeric topics omitted' if omitted and n == 1 else '')
+            figures[name] = device_panel(part, theme=self.theme, title=title, max_rows=points_per_figure)
+        return figures
 
 
 def comparison(sources: list[Source], baseline: Source, selection: Selection) -> dict[str, go.Figure]:

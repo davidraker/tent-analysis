@@ -73,7 +73,8 @@ def test_report_and_cli(source, tmp_path, capsys):
 def test_export_every_kind_and_parquet(source, tmp_path):
     from tent_analysis.report.cli import EXPORTS
     from tent_analysis.data import load_curves, load_signals
-    assert set(EXPORTS) == {'measurements', 'history', 'curves', 'signals', 'state_changes', 'meter_readings', 'historian_topics'}
+    assert set(EXPORTS) == {'measurements', 'history', 'curves', 'signals', 'orders', 'state_changes', 'meter_readings',
+                            'historian_topics'}
     for what in EXPORTS:
         assert main(['export', source.url, '--what', what, '--out', str(tmp_path / f'{what}.csv')]) == 0
     assert len(pd.read_csv(tmp_path / 'signals.csv')) == len(load_signals(source, history=True))

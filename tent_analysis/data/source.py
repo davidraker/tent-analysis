@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import PurePath
 
-from sqlalchemy import Table
 from sqlalchemy.engine import make_url
 from tent.data_manager.local_data_manager import LocalDataManager
 
@@ -42,6 +41,7 @@ class Schema:
 
     @property
     def has_orders(self) -> bool:
+        """A MatchingEngine's order-book table exists (it may still be empty; see Catalog.order_count)."""
         return 'order' in self.tables
 
 
@@ -59,10 +59,8 @@ class Source:
             # Only TENT's own tables are registered; of anything else in the database, only the historian tables are
             # reflected, and only when present.
             self.reader = LocalDataManager.from_url(self.url, reflect_unknown=False)
-            present = self.reader.present_tables
-            if set(HISTORIAN_TABLES) <= present:
-                for name in HISTORIAN_TABLES:
-                    self.reader.tables[name] = Table(name, self.reader.registry.metadata, autoload_with=self.reader.engine)
+            if set(HISTORIAN_TABLES) <= self.reader.present_tables:
+                self.reader.reflect_unknown_tables(only=HISTORIAN_TABLES)
         if self.label is None:
             self.label = default_label(self.url)
 

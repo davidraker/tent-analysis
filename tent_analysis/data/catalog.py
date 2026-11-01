@@ -2,6 +2,7 @@
 from functools import cached_property
 
 import pandas as pd
+from sqlalchemy import distinct, func, select
 
 from tent_analysis.data.source import Source
 
@@ -79,6 +80,14 @@ class Catalog:
         df['measurement_type'] = df['measurement_type'].map(_enum_name)
         df['unit'] = df['unit'].map(_enum_name)
         return df
+
+    @cached_property
+    def order_count(self) -> int:
+        """Distinct orders in the order book (0 without an order table). The order-book views exist only when > 0."""
+        if not self.source.schema.has_orders:
+            return 0
+        order = self.reader.tables['order']
+        return int(self.reader.execute(select(func.count(distinct(order.c.id)).label('n')))[0]['n'])
 
     @cached_property
     def run_labels(self) -> dict:

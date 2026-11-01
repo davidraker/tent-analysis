@@ -6,19 +6,17 @@ from typing import Callable
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from tent_analysis.analysis import (cleared_prices, price_revisions, scheduled_power, net_power, energy_cost,
-                                    aggregate_cost)
-from tent_analysis.data import Source, load_measurements, load_meter_readings
-from tent_analysis.viz import Theme, color_map, price_timeline, power_timeline, cost_bars
+from tent_analysis.data import Source
+from tent_analysis.viz import Theme
 
 
-PAGES = ('overview', 'curves', 'negotiation', 'markets', 'signals', 'bids', 'costs', 'devices')
+PAGES = ('overview', 'curves', 'negotiation', 'markets', 'orders', 'signals', 'bids', 'costs', 'devices')
 
 
 def standard_figures(source: Source, theme: Theme | None = None,
                      on_error: Callable[[str, Exception], None] | None = None) -> dict[str, go.Figure]:
-    """Every figure family the archive can support: overview, curves, negotiation, markets, signals, bid position,
-    costs, devices. Built through the dashboard views so report and dashboard always agree. A page that fails raises,
+    """Every figure family the archive can support: overview, curves, negotiation, markets, orders (MatchingEngine
+    archives only), signals, bid position, costs, devices (historian archives only). Built through the dashboard views so report and dashboard always agree. A page that fails raises,
     unless `on_error` is given: then it is called with the page name and the exception and the other pages are still
     built, so one broken family does not cost the whole report."""
     from tent_analysis.app.views import Selection, Views

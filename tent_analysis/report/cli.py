@@ -9,15 +9,15 @@ from pathlib import Path
 import pandas as pd
 
 from tent_analysis.data import (Source, load_measurements, load_curves, load_state_changes, load_meter_readings,
-                                load_historian_topics, load_signals, redact_url)
+                                load_historian_topics, load_orders, load_signals, redact_url)
 from tent_analysis.report.html import build_report, standard_figures
 from tent_analysis.report.images import FORMATS, write_images
 from tent_analysis.viz import Theme
 
 EXPORTS = {'measurements': lambda s: load_measurements(s), 'history': lambda s: load_measurements(s, history=True),
            'curves': lambda s: load_curves(s, history=True), 'signals': lambda s: load_signals(s, history=True),
-           'state_changes': load_state_changes, 'meter_readings': load_meter_readings,
-           'historian_topics': load_historian_topics}
+           'orders': lambda s: load_orders(s, history=True), 'state_changes': load_state_changes,
+           'meter_readings': load_meter_readings, 'historian_topics': load_historian_topics}
 
 
 def inspect(args) -> int:
@@ -25,7 +25,7 @@ def inspect(args) -> int:
     cat = source.catalog
     print(f'Source: {source.label} ({redact_url(source.url)})')
     print(f'Tables present: {len(source.schema.tables)} | historian topics: {source.schema.has_historian_topics} '
-          f'| meter readings: {source.schema.has_meter_readings} | orders: {source.schema.has_orders}')
+          f'| meter readings: {source.schema.has_meter_readings} | order book: {source.schema.has_orders}')
     runs = cat.runs
     print(f'\nRuns ({len(runs)}):')
     for _, r in runs.iterrows():
@@ -36,7 +36,14 @@ def inspect(args) -> int:
         print(f'\nComponents ({len(comps)}):')
         for t, grp in comps.groupby('type'):
             print(f'  {t:<28} {len(grp):>3}  {", ".join(sorted(map(str, grp["name"]))[:8])}')
-    print(f'\nMarkets: {len(cat.markets)} | intervals: {len(cat.intervals)} | measurements: {len(cat.measurements)}')
+    print(f'\nMarkets: {len(cat.markets)} | intervals: {len(cat.intervals)} | measurements: {len(cat.measurements)} '
+          f'| orders: {cat.order_count}')
+    if cat.order_count:
+        from tent_analysis.analysis import order_book, order_counts
+        from tent_analysis.data import load_orders
+        counts = order_counts(order_book(load_orders(source)))
+        by_status = counts.groupby('status', observed=True)['orders'].sum()
+        print('Orders by latest status: ' + ', '.join(f'{status} {n}' for status, n in by_status.items()))
     with pd.option_context('display.width', 160, 'display.max_rows', 60):
         counts = cat.measurements.groupby(['owner_type', 'measurement_type']).size()
         if not counts.empty:

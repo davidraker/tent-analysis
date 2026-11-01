@@ -2,10 +2,13 @@
 revisions, scheduled powers, convergence flags, a curve with versions, and a few meter readings."""
 import json
 import random
+import shutil
 from datetime import timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
+import sqlalchemy as sa
 
 from tent.containers.vertex import Vertex
 from tent.utils.timer import Timer
@@ -24,7 +27,8 @@ def _mock_tn_class():
     return module.MockTN
 
 
-def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1, tz: str = 'UTC') -> dict:
+def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1, tz: str = 'UTC',
+                  orders: bool = True) -> dict:
     MockTN = _mock_tn_class()
     rng = random.Random(seed)
     Timer.simulation = False
@@ -34,10 +38,26 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
     configs['actor_id'] = actor
     configs['organization_id'] = 'PNNL'
     configs['tz'] = tz
+    if orders:
+        # A MatchingEngine series declared in the configuration, so its order-book tables are created with the node's.
+        engine = dict(configs['market_series'][0], name='Matching_Market', market_class_name='MatchingEngine',
+                      market_module_name='tent.market.matching_engine', initial_market_state='Negotiation',
+                      duration_negotiation=600, refined_series=None)
+        for key in ('price_model', 'method', 'actuate_assets', 'duality_gap_threshold'):
+            engine.pop(key, None)
+        configs['market_series'].append(engine)
     tn = MockTN()
     tn.configure_node(configs)
     for _ in range(2):
         tn.step()
+    if orders:
+        # One negotiation pass of the engine: every entity's active-vertex curve is quoted into the book and each new
+        # order is matched, leaving matched legs, superseded parents and standing remainders in the archive.
+        from tent.enumerations import OrderStatus
+        engine_market = next(s for s in tn.market_series if s.name == 'Matching_Market').newest_market
+        engine_market.quote_entities()
+        for order in [o for o in engine_market.orderList if o.status in (OrderStatus.NEW, OrderStatus.NEW_REVISED)]:
+            engine_market.match(order)
     # Full consensus is recorded only by a ConsensusMarket, so the archive gets one consensus series alongside the
     # auctions, with the same timing as the first auction series. It is never stepped; the fixture writes its data.
     from tent.enumerations import MarketState
@@ -128,7 +148,32 @@ def variant(variant_url):
 
 @pytest.fixture(scope='session')
 def pacific(tmp_path_factory):
-    """The same kind of archive, from a node configured in America/Los_Angeles."""
+    """The same kind of archive, from a node configured in America/Los_Angeles, without an order book."""
     url = f'sqlite:///{tmp_path_factory.mktemp("archive") / "campus_pacific.sqlite"}'
-    build_archive(url, actor='campus-P', tz='America/Los_Angeles')
+    build_archive(url, actor='campus-P', tz='America/Los_Angeles', orders=False)
     return Source(url, label='campus_pacific')
+
+
+@pytest.fixture(scope='session')
+def historian(source, tmp_path_factory):
+    """The fixture archive plus a VOLTTRON historian (topics/data) and an unrelated table in the same database."""
+    path = tmp_path_factory.mktemp('shared') / 'shared.sqlite'
+    shutil.copy(source.url.removeprefix('sqlite:///'), path)
+    engine = sa.create_engine(f'sqlite:///{path}')
+    meta = sa.MetaData()
+    topics = sa.Table('topics', meta, sa.Column('topic_id', sa.Integer, primary_key=True), sa.Column('topic_name', sa.Text))
+    data = sa.Table('data', meta, sa.Column('ts', sa.DateTime), sa.Column('topic_id', sa.Integer), sa.Column('value_string', sa.Text))
+    notes = sa.Table('secret_notes', meta, sa.Column('id', sa.Integer, primary_key=True), sa.Column('note', sa.Text))
+    meta.create_all(engine)
+    t0 = pd.Timestamp('2017-07-01T00:00Z')
+    with engine.begin() as conn:
+        conn.execute(topics.insert(), [{'topic_id': 1, 'topic_name': 'campus/building1/OutdoorAirTemperature'},
+                                       {'topic_id': 2, 'topic_name': 'campus/building1/Status'},
+                                       {'topic_id': 3, 'topic_name': 'campus/building1/Power'}])
+        conn.execute(data.insert(), [{'ts': (t0 + pd.Timedelta(minutes=10 * i)).to_pydatetime().replace(tzinfo=None),
+                                      'topic_id': 1, 'value_string': str(20.0 + i)} for i in range(4)]
+                     + [{'ts': t0.to_pydatetime().replace(tzinfo=None), 'topic_id': 2, 'value_string': '{"mode": "cool"}'}]
+                     + [{'ts': (t0 + pd.Timedelta(minutes=10 * i)).to_pydatetime().replace(tzinfo=None),
+                         'topic_id': 3, 'value_string': str(1000.0 * i)} for i in range(3)])
+        conn.execute(notes.insert(), [{'id': 1, 'note': 'not for the analysis tool'}])
+    return Source(f'sqlite:///{path}', label='historian')

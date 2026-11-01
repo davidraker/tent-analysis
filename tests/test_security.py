@@ -1,9 +1,6 @@
 """Credentials stay out of output, archive names cannot inject markup into figures, unknown tables are not reflected."""
-import shutil
-
 import pandas as pd
 import pytest
-import sqlalchemy as sa
 
 from tent_analysis.app.views import Selection, Views, source_labels
 from tent_analysis.data import Source, default_label, load_historian_topics, redact_url
@@ -78,39 +75,18 @@ def test_names_from_the_archive_are_escaped_in_figures():
     assert market_timeline(segments).layout.yaxis.categoryarray == (text(EVIL),)
 
 
-@pytest.fixture(scope='module')
-def shared_db(source, tmp_path_factory):
-    """The fixture archive plus a VOLTTRON historian (topics/data) and an unrelated table in the same database."""
-    path = tmp_path_factory.mktemp('shared') / 'shared.sqlite'
-    shutil.copy(source.url.removeprefix('sqlite:///'), path)
-    engine = sa.create_engine(f'sqlite:///{path}')
-    meta = sa.MetaData()
-    topics = sa.Table('topics', meta, sa.Column('topic_id', sa.Integer, primary_key=True), sa.Column('topic_name', sa.Text))
-    data = sa.Table('data', meta, sa.Column('ts', sa.DateTime), sa.Column('topic_id', sa.Integer), sa.Column('value_string', sa.Text))
-    notes = sa.Table('secret_notes', meta, sa.Column('id', sa.Integer, primary_key=True), sa.Column('note', sa.Text))
-    meta.create_all(engine)
-    t0 = pd.Timestamp('2017-07-01T00:00Z')
-    with engine.begin() as conn:
-        conn.execute(topics.insert(), [{'topic_id': 1, 'topic_name': 'campus/building1/OutdoorAirTemperature'},
-                                       {'topic_id': 2, 'topic_name': 'campus/building1/Status'}])
-        conn.execute(data.insert(), [{'ts': (t0 + pd.Timedelta(minutes=10 * i)).to_pydatetime().replace(tzinfo=None),
-                                      'topic_id': 1, 'value_string': str(20.0 + i)} for i in range(4)]
-                     + [{'ts': t0.to_pydatetime().replace(tzinfo=None), 'topic_id': 2, 'value_string': '{"mode": "cool"}'}])
-        conn.execute(notes.insert(), [{'id': 1, 'note': 'not for the analysis tool'}])
-    return Source(f'sqlite:///{path}', label='shared')
-
-
-def test_only_historian_tables_are_reflected(shared_db, source):
-    assert shared_db.schema.has_historian_topics and 'secret_notes' in shared_db.schema.tables
-    assert {'topics', 'data'} <= set(shared_db.reader.tables) and 'secret_notes' not in shared_db.reader.tables
+def test_only_historian_tables_are_reflected(historian, source):
+    assert historian.schema.has_historian_topics and 'secret_notes' in historian.schema.tables
+    assert {'topics', 'data'} <= set(historian.reader.tables) and 'secret_notes' not in historian.reader.tables
     assert 'topics' not in source.reader.tables, 'nothing reflected when the historian tables are absent'
-    frame = load_historian_topics(shared_db)
-    assert list(frame.columns) == ['source', 'topic', 'ts', 'value'] and len(frame) == 5
+    frame = load_historian_topics(historian)
+    assert list(frame.columns) == ['source', 'topic', 'ts', 'value'] and len(frame) == 8
     assert str(frame['ts'].dt.tz) == 'UTC' and frame['ts'].min() == pd.Timestamp('2017-07-01T00:00Z')
     temps = frame[frame['topic'].str.endswith('OutdoorAirTemperature')]
     assert list(temps['value']) == [20.0, 21.0, 22.0, 23.0], 'numeric strings decode to floats'
     assert frame[frame['topic'].str.endswith('Status')]['value'].iloc[0] == {'mode': 'cool'}, 'JSON decodes'
-    assert load_historian_topics(shared_db, '%Temperature').topic.nunique() == 1
-    devices = Views(shared_db, Selection()).devices()
-    assert set(devices) == {'Device points'} and len(devices['Device points'].data) == 2
+    assert load_historian_topics(historian, '%Temperature').topic.nunique() == 1
+    devices = Views(historian, Selection()).devices()
+    assert set(devices) == {'Device points'} and len(devices['Device points'].data) == 2, 'the JSON-valued Status topic is not a line'
+    assert devices['Device points'].layout.title.text == 'Device points, 1 non-numeric topics omitted'
     assert load_historian_topics(source).empty

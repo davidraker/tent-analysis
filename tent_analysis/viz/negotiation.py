@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from tent_analysis.viz.theme import SEQUENTIAL, STATUS, Theme, color_map, text, time_axis
-from tent_analysis.viz.timelines import LINE, _alpha, _row_titles, add_state_bands
+from tent_analysis.viz.timelines import LINE, _row_titles, add_state_bands
 
 STATE_ORDER = ['Initial', 'Inactive', 'Active', 'Negotiation', 'MarketLead', 'DeliveryLead', 'Delivery', 'Reconcile',
                'Expired']
@@ -127,19 +127,34 @@ def consensus_strip(consensus: pd.DataFrame, theme: Theme | None = None) -> go.F
     return fig
 
 
-def device_panel(topics: pd.DataFrame, theme: Theme | None = None, title: str = 'Device points') -> go.Figure:
-    """Historian topics as small multiples, one panel per topic (one unit per axis, never a second y scale)."""
+def device_panel(topics: pd.DataFrame, theme: Theme | None = None, title: str = 'Device points',
+                 max_rows: int = 24) -> go.Figure:
+    """Historian topics as small multiples: one panel per point name (the topic's last path segment, so one unit per
+    axis), one line per device (the rest of the topic path). Topics whose values are not numeric are not drawable here
+    and raise; the caller filters them (Views.devices). More point names than `max_rows` raise too: split the topics."""
     theme = theme or Theme()
-    names = sorted(topics['topic'].unique())
-    colors = color_map(names, theme)
-    fig = make_subplots(rows=len(names), cols=1, shared_xaxes=True, vertical_spacing=0.04)
-    _row_titles(fig, [n.split('/')[-1] for n in names], theme)
-    for i, name in enumerate(names, start=1):
-        part = topics[topics['topic'] == name].sort_values('ts')
-        values = pd.to_numeric(part['value'], errors='coerce')
-        fig.add_trace(go.Scatter(x=part['ts'], y=values, mode='lines', name=text(name), showlegend=False,
-                                 line=dict(color=colors[name], width=2),
-                                 hovertemplate='%{y}<extra>' + text(name) + '</extra>'), row=i, col=1)
-    fig.update_xaxes(title_text=time_axis('Time', topics['ts']), row=len(names), col=1)
-    theme.apply(fig, title=title, height=max(300, 150 * len(names) + 100))
+    df = topics.assign(point=topics['topic'].str.rsplit('/', n=1).str[-1],
+                       device=topics['topic'].str.rsplit('/', n=1).str[0])
+    df['number'] = pd.to_numeric(df['value'], errors='coerce')
+    unusable = sorted(df.loc[df['number'].isna() & df['value'].notna(), 'topic'].unique())
+    if unusable:
+        raise ValueError(f'{len(unusable)} topics hold non-numeric values and cannot be drawn as lines: {unusable[:5]}')
+    points = sorted(df['point'].unique())
+    if len(points) > max_rows:
+        raise ValueError(f'{len(points)} point names exceed max_rows={max_rows}; split the topics into several figures')
+    devices = sorted(df['device'].unique())
+    colors = color_map(devices, theme)
+    fig = make_subplots(rows=len(points), cols=1, shared_xaxes=True, vertical_spacing=min(0.04, 0.8 / max(1, len(points) - 1)))
+    _row_titles(fig, points, theme)
+    shown = set()
+    for i, point in enumerate(points, start=1):
+        for device, part in df[df['point'] == point].groupby('device', sort=True):
+            part = part.sort_values('ts')
+            fig.add_trace(go.Scatter(x=part['ts'], y=part['number'], mode='lines', name=text(device), legendgroup=device,
+                                     showlegend=device not in shown, line=dict(color=colors[device], width=2),
+                                     hovertemplate='%{y}<extra>' + text(device) + '/' + text(point) + '</extra>'), row=i, col=1)
+            shown.add(device)
+    fig.update_xaxes(title_text=time_axis('Time', topics['ts']), row=len(points), col=1)
+    theme.apply(fig, title=title, height=max(300, 150 * len(points) + 100))
+    fig.update_layout(showlegend=len(devices) > 1, hovermode='closest')
     return fig

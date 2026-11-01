@@ -79,7 +79,8 @@ CURVE_COLUMNS = ['source', 'actor', 'run_id', 'curve_id', 'record_time', 'owner_
 
 def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = None, history: bool = False,
                 as_of: datetime = None) -> pd.DataFrame:
-    """One row per vertex, with its curve version and owner. `types` default to every vertex-type measurement; a
+    """One row per vertex, with its curve version and owner. `types` default to every vertex-type measurement except
+    the order book (orders are curves too, but hundreds per market; load_orders returns them with their status); a
     filter that matches no measurement header yields an empty frame. `direction` is 'sent' or 'received' for the
     vertices of a transactive signal (quantities as archived, see load_signals) and null for every other curve."""
     catalog = source.catalog
@@ -87,6 +88,9 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
     filtered = types is not None or owners is not None
     if types is not None:
         headers = headers[headers['measurement_type'].isin(_names(types))]
+    else:
+        headers = headers[headers['measurement_type'] != 'Order']
+        filtered = filtered or (catalog.measurements['measurement_type'] == 'Order').any()
     if owners is not None:
         headers = headers[headers['owner_name'].isin(list(owners))]
     if headers.empty:
@@ -231,4 +235,57 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
     df['actor'] = df['run_id'].map(catalog.run_labels)
     df = _in_zone(df, source, ['signal_time', 'interval_start', 'record_time'])
     return df[SIGNAL_COLUMNS].sort_values(['neighbor_name', 'interval_start', 'direction', 'record_time', 'record']) \
+        .reset_index(drop=True)
+
+
+ORDER_COLUMNS = ['source', 'actor', 'run_id', 'order_id', 'record_time', 'status', 'side', 'actor_name', 'buyer_name',
+                 'seller_name', 'parent_order_id', 'time_stamp', 'expire_by', 'market_id', 'market_name', 'market_series',
+                 'interval_id', 'interval_start', 'record', 'price', 'quantity', 'continuity']
+
+
+def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
+    """
+    The order book of every MatchingEngine market: one row per order vertex and version, with the order's status, side
+    (supply or demand), actor, buyer and seller, parent order, and delivery interval. An order is archived each time its
+    state changes (submitted, matched, superseded, left standing, cancelled, expired); with history=False only the
+    newest version of each order id is returned. A matched leg carries one vertex: the matched quantity at the match
+    price. Empty without an order table.
+    """
+    if not source.schema.has_orders:
+        return pd.DataFrame(columns=ORDER_COLUMNS)
+    reader = source.reader
+    order, sd, ti, vx = reader.tables['order'], reader.tables['sd_curve'], reader.tables['time_interval'], reader.tables['vertex']
+    comp = reader.tables['component']
+    actor, buyer, seller = comp.alias('actor'), comp.alias('buyer'), comp.alias('seller')
+    statement = (select(order.c.id.label('order_id'), order.c.record_time, order.c.status, order.c.supply_or_demand.label('side'),
+                        actor.c.name.label('actor_name'), buyer.c.name.label('buyer_name'), seller.c.name.label('seller_name'),
+                        order.c.parent_order_id, order.c.time_stamp, order.c.expire_by, ti.c.market_id,
+                        sd.c.time_interval_id.label('interval_id'), ti.c.start_time.label('interval_start'))
+                 .join(sd, (sd.c.id == order.c.id) & (sd.c.record_time == order.c.record_time))
+                 .join(ti, ti.c.id == sd.c.time_interval_id)
+                 .join(actor, actor.c.id == order.c.actor_id, isouter=True)
+                 .join(buyer, buyer.c.id == order.c.buyer_id, isouter=True)
+                 .join(seller, seller.c.id == order.c.seller_id, isouter=True))
+    versions = pd.DataFrame(reader.execute(statement))
+    if versions.empty:
+        return pd.DataFrame(columns=ORDER_COLUMNS)
+    if not history:
+        newest = versions.groupby('order_id')['record_time'].transform('max')
+        versions = versions[versions['record_time'] == newest]
+    vertices = pd.DataFrame(reader.execute(
+        select(vx.c.curve_id.label('order_id'), vx.c.curve_record_time.label('record_time'), vx.c.record, vx.c.price,
+               vx.c.quantity, vx.c.continuity).where(vx.c.curve_id.in_(list(versions['order_id'].unique())))))
+    df = versions.merge(vertices, on=['order_id', 'record_time'], how='inner')
+    if df.empty:
+        return pd.DataFrame(columns=ORDER_COLUMNS)
+    for column in ('status', 'side'):
+        df[column] = df[column].map(_enum_name)
+    catalog = source.catalog
+    markets = catalog.markets[['id', 'name', 'series_name', 'tn_id']].rename(
+        columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series', 'tn_id': 'run_id'})
+    df = df.merge(markets, on='market_id', how='left')
+    df['source'] = source.label
+    df['actor'] = df['run_id'].map(catalog.run_labels)
+    df = _in_zone(df, source, ['record_time', 'time_stamp', 'expire_by', 'interval_start'])
+    return df[ORDER_COLUMNS].sort_values(['market_series', 'interval_start', 'record_time', 'order_id', 'record']) \
         .reset_index(drop=True)

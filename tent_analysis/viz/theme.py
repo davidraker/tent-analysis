@@ -4,9 +4,8 @@ built once from the sorted entity names of a catalog and reused by every figure,
 Palette values are the skill's validated reference palette (references/palette.md); swap them for a brand palette.
 """
 import html
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import pandas as pd
 import plotly.graph_objects as go
 
 CATEGORICAL = {

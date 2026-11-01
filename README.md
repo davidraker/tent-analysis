@@ -22,18 +22,22 @@ Extras: `export` (Kaleido, for `report --format png|pdf`; needs a Chrome or Chro
 Passwords are never printed or used in labels: the default label is the database name (file stem for SQLite), else
 the host.
 
-- `inspect` lists runs (with their configured time zone), components by type, and measurement headers by owner type.
+- `inspect` lists runs (with their configured time zone), components by type, measurement headers by owner type, and
+  the order book's size and latest statuses when the archive has one.
 - `export` writes one tidy frame as CSV or Parquet. `--what` is one of `measurements` (latest version per interval),
-  `history` (every version), `curves` (one row per vertex, every version), `signals` (sent and received transactive
-  signals, one row per vertex), `state_changes`, `meter_readings`, `historian_topics` (decoded `topics`/`data` rows).
-- `report` builds every figure family the archive supports (overview, curves, negotiation, markets, signals, bid
-  position, costs, devices). `html` writes one self-contained page; `png` and `pdf` write one file per figure into the
-  `--out` directory, numbered in report order. A figure family that fails is reported on stderr and skipped; the report
-  is still written and the exit status is 1.
+  `history` (every version), `curves` (one row per vertex, every version, order book excluded), `signals` (sent and
+  received transactive signals, one row per vertex), `orders` (every version of every order, one row per vertex),
+  `state_changes`, `meter_readings`, `historian_topics` (decoded `topics`/`data` rows).
+- `report` builds every figure family the archive supports (overview, curves, negotiation, markets, orders, signals,
+  bid position, costs, devices). Orders appear only for archives with a MatchingEngine order book that holds orders,
+  devices only for archives with historian tables. `html` writes one self-contained page; `png` and `pdf` write one
+  file per figure into the `--out` directory, numbered in report order. A figure family that fails is reported on
+  stderr and skipped; the report is still written and the exit status is 1.
 - `dashboard` opens the Streamlit app on one or more archives. The URLs are handed to the Streamlit process through
   the `TENT_ANALYSIS_URLS` environment variable (semicolon-separated), not on its command line. Sidebar: source, theme,
   market series, owners, delivery date range; the Curves page has an owner picker, the Signals page a neighbor picker,
-  and clicking a point on an Overview timeline focuses that delivery interval for Curves and Negotiation. With several
+  the Devices page a topic pattern, and clicking a point on an Overview timeline focuses that delivery interval for
+  Curves and Negotiation. The Orders and Devices pages are listed only when the archive can fill them. With several
   archives a Compare page shows price and cost deltas against a chosen baseline.
 
 ## Library
@@ -64,11 +68,19 @@ Conventions the frames follow:
   curves there (a neighbor's sent and received signals); `single_curve` keeps the newest version per curve id and lets
   a later market of the same series supersede an earlier one for the same interval.
 - "Latest" always means the newest `record_time` per key, taken as a whole row.
+- The order book (`load_orders`) is one row per order vertex and version; `order_book` collapses it to one row per
+  version with the order's quantity and price taken from its last vertex (a matched leg's matched quantity and match
+  price), `order_counts` counts latest statuses per market and interval, and `matched_quantities` reports matched
+  kilowatts, legs, the quantity-weighted match price (NaN when every match price is infinite) and standing supply and
+  demand.
+- Historian topics are drawn one panel per point name (the topic's last path segment) with one line per device;
+  topics whose values are not numeric are left out and counted in the figure title.
 
 ## Tests
 
     pytest tests -q
 
-The fixtures build archives by driving TENT objects (`tests/conftest.py`), including one configured in
-`America/Los_Angeles` and one with historian tables, so the loaders, metrics, figures, report, CLI and dashboard
-logic are exercised against real TENT output.
+The fixtures build archives by driving TENT objects (`tests/conftest.py`): two auction series, a consensus series,
+a MatchingEngine series with one negotiation pass of orders, signals and meter readings; one archive configured in
+`America/Los_Angeles` without an order book; and one with historian tables. The loaders, metrics, figures, report, CLI
+and dashboard logic are exercised against real TENT output.

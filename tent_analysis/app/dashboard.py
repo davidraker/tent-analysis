@@ -11,7 +11,14 @@ from tent_analysis.app.views import Selection, Views, comparison, date_bounds, s
 from tent_analysis.data import Source
 
 PAGES = {'Overview': 'overview', 'Curves': 'curves', 'Negotiation': 'negotiation', 'Markets': 'markets',
-         'Signals': 'signals', 'Bid position': 'bids', 'Costs': 'costs', 'Devices': 'devices'}
+         'Orders': 'orders', 'Signals': 'signals', 'Bid position': 'bids', 'Costs': 'costs', 'Devices': 'devices'}
+
+
+def pages_for(source: Source) -> list[str]:
+    """The pages this archive can fill: Orders needs an order book, Devices needs historian tables."""
+    cat = source.catalog
+    return [name for name, view in PAGES.items()
+            if (view != 'orders' or cat.order_count > 0) and (view != 'devices' or source.schema.has_historian_topics)]
 
 
 @st.cache_resource(show_spinner=False)
@@ -55,7 +62,7 @@ def main():
     sel = Selection(series=series, owners=owners, start=start, end=end, mode=mode,
                     interval_start=st.session_state.get('interval_start'), owner=st.session_state.get('owner'),
                     neighbor=st.session_state.get('neighbor'))
-    page = st.sidebar.radio('Page', list(PAGES) + (['Compare'] if len(sources) > 1 else []))
+    page = st.sidebar.radio('Page', pages_for(current) + (['Compare'] if len(sources) > 1 else []))
     st.header(f'{current.label}: {page}')
     intervals = []
     if page == 'Compare':
@@ -81,7 +88,11 @@ def main():
                 views.sel.neighbor = st.selectbox('Neighbor', names,
                                                   index=names.index(sel.neighbor) if sel.neighbor in names else 0)
                 st.session_state['neighbor'] = views.sel.neighbor
-        figures = getattr(views, PAGES[page])()
+        if page == 'Devices':
+            pattern = st.text_input('Topic pattern (SQL LIKE, e.g. %/Power)', value='%')
+            figures = views.devices(pattern)
+        else:
+            figures = getattr(views, PAGES[page])()
     if not figures:
         st.warning('Nothing to show for this selection.')
         return
