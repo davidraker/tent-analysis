@@ -6,7 +6,7 @@ in the schema. Components are matched by list and name (and class), as Transacti
 from dataclasses import dataclass
 
 from tent_analysis.config import schema as S
-from tent_analysis.config.documents import HOST_KEYS, strip_docs
+from tent_analysis.config.documents import host_keys, strip_docs
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,7 @@ def _diff_object(old: dict, new: dict, fragment: dict, path: str) -> list[Change
             continue
         sub_path = _join(path, key)
         prop = properties.get(key)
-        if key in HOST_KEYS.get(path.split('[', 1)[0], ()):
+        if key in host_keys().get(path.split('[', 1)[0], ()):
             changes.append(Change(sub_path, _kind(old, new, key), old.get(key), new.get(key), None,
                                   'a host application key, not a TENT setting; the host decides'))
             continue

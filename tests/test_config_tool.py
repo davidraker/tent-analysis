@@ -74,14 +74,18 @@ def test_deployed_configurations_validate(path):
     structure = checks.validate_structure(config)
     assert structure.ok, structure.text()  # the deployed files follow the schema exactly (weekday names lowercase)
     report = checks.validate(config)
-    # The agent's per-neighbor sender key is stripped before TENT's models see the file, as the agent does.
-    assert any('sender' in n for n in config['neighbors']), 'the deployed files carry the host key'
+    # The agent's per-neighbor sender key is stripped before TENT's models see the file, as the agent does, and listed
+    # as a host key rather than a problem.
+    bound = [(f'neighbors[{i}]', 'sender', n['sender']) for i, n in enumerate(config['neighbors']) if 'sender' in n]
+    assert bound, 'the deployed files bind every transactive neighbor to a sender'
+    assert [(h.path, h.key, h.value) for h in report.hosts] == bound
+    assert all('@' in h.value for h in report.hosts) and '[host] neighbors[0].sender:' in report.text()
     assert all('sender' not in n for n in documents.prepared(config)['neighbors'])
     changed = deepcopy(config)
     changed['neighbors'][0]['sender'] = 'someone@elsewhere'
     sender_changes = diff_configs(config, changed)
-    assert [(c.path, c.reconfigurable) for c in sender_changes] == ['neighbors[0].sender', None][0:1] + [None] if False else \
-        [(c.reconfigurable, 'host application key' in c.reason) for c in sender_changes] == [(None, True)]
+    assert [(c.path, c.reconfigurable, 'host application key' in c.reason) for c in sender_changes] == \
+        [('neighbors[0].sender', None, True)]
     # Classes from outside TENT (the VOLTTRON agent package and the volttron_archivable data manager) are reported as
     # unchecked here, never as problems.
     outside = ('transactive_node', 'volttron_archivable')
@@ -545,3 +549,23 @@ def test_docs_page_lists_every_registered_class(tmp_path):
     assert main(['docs', '--out', str(tmp_path / 'md')]) == 0 and (tmp_path / 'md' / 'configuring_a_node.md').read_text() == md
     with pytest.raises(ValueError, match='format'):
         render('html')
+
+
+def test_host_keys_come_from_the_agent_when_it_exports_them(monkeypatch, sample):
+    import sys
+    import types
+    assert documents.host_keys() == documents.DEFAULT_HOST_KEYS, 'the agent package is not installed here'
+    assert documents.host_keys()['neighbors'] == {'sender'} and 'db_topic' in documents.host_keys()['']
+    agent = types.ModuleType('transactive_node')
+    agent.HOST_KEYS = {'': {'db_topic'}, 'neighbors': {'sender', 'relay'}, 'meter_points': {'poll_topic'}}
+    monkeypatch.setitem(sys.modules, 'transactive_node', agent)
+    assert documents.host_keys() == {'': frozenset({'db_topic'}), 'neighbors': frozenset({'sender', 'relay'}),
+                                     'meter_points': frozenset({'poll_topic'})}
+    hosted = deepcopy(sample)
+    hosted['neighbors'][1]['relay'] = 'hub'
+    hosted['meter_points'][0]['poll_topic'] = 'devices/campus/meter'
+    report = checks.validate(hosted)
+    assert report.ok and [(h.path, h.key) for h in report.hosts] == [('meter_points[0]', 'poll_topic'), ('neighbors[1]', 'relay')]
+    assert report.text().endswith('0 problems (placeholders, structure, semantics checked), 2 host keys')
+    monkeypatch.delitem(sys.modules, 'transactive_node')
+    assert not checks.validate(hosted).ok, "without the agent's declaration the keys are unknown to TENT"

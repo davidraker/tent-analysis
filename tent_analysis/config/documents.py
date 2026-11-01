@@ -3,7 +3,10 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from tent import registry
 from tent.transactive_node import LEGACY_NODE_KEYS
+
+NODE_LIST_ORDER = tuple(registry.NODE_LISTS)  # the node's construction order: meter points first, market series last
 
 DOC_KEY = '_doc'
 """Templates carry field descriptions under this key (JSON has no comments); strip_docs removes it, and validate,
@@ -108,18 +111,48 @@ def placeholders(value, path: str = '') -> list[tuple[str, str]]:
     return found
 
 
-HOST_KEYS: dict[str, tuple[str, ...]] = {'neighbors': ('sender',)}
-"""Keys of a component entry that the host application (the VOLTTRON TransactiveNodeAgent) reads and removes before the
-configuration reaches TENT, by node list: a neighbor's `sender` is the message-bus identity the agent accepts that
-neighbor's signals from. TENT's models do not know them, so validation strips them first; a configuration file as
-deployed keeps them."""
+# The host application's keys in a node configuration, by node list ('' for the top level). The TransactiveNodeAgent
+# reads these and removes them before the configuration reaches TENT, whose models refuse what they do not declare.
+# Source of truth: the agent package's own HOST_KEYS export when it is importable (see host_keys); until the agent
+# exports one, this mapping is the tool's. The top-level keys are also fields of TENT's node model (TENT accepts them
+# for the host), so only the per-list keys are stripped before validation.
+DEFAULT_HOST_KEYS: dict[str, frozenset[str]] = {
+    '': frozenset({'db_topic', 'subscribe_all_platforms', 'topics'}),
+    'neighbors': frozenset({'sender'}),  # identity@instance the platform must present for the neighbor's signals
+}
+
+
+def host_keys() -> dict[str, frozenset[str]]:
+    """List name ('' for the top level) -> the host application's keys there: the agent package's HOST_KEYS when the
+    package is installed and exports one, else DEFAULT_HOST_KEYS."""
+    try:
+        from transactive_node import HOST_KEYS as declared  # noqa: PLC0415  optional host package
+    except ImportError:
+        return dict(DEFAULT_HOST_KEYS)
+    return {list_name: frozenset(keys) for list_name, keys in dict(declared).items()}
+
+
+def host_entries(config: dict) -> list[tuple[str, str, object]]:
+    """(path, key, value) of every host key present in the component lists of `config` (the keys TENT would refuse)."""
+    found = []
+    keys_by_list = host_keys()
+    for list_name in sorted(keys_by_list, key=lambda name: (list(NODE_LIST_ORDER).index(name) if name in NODE_LIST_ORDER else len(NODE_LIST_ORDER), name)):
+        keys = keys_by_list[list_name]
+        if not list_name:
+            continue
+        entries = config.get(list_name)
+        if isinstance(entries, list):
+            for index, entry in enumerate(entries):
+                if isinstance(entry, dict):
+                    found.extend((f'{list_name}[{index}]', key, entry[key]) for key in sorted(keys) if key in entry)
+    return found
 
 
 def strip_host_keys(config: dict) -> dict:
-    """A copy of `config` without the host application's keys (HOST_KEYS)."""
+    """A copy of `config` without the host application's per-list keys (host_entries), as the host hands it to TENT."""
     result = dict(config)
-    for list_name, keys in HOST_KEYS.items():
-        entries = result.get(list_name)
+    for list_name, keys in host_keys().items():
+        entries = result.get(list_name) if list_name else None
         if isinstance(entries, list):
             result[list_name] = [{k: v for k, v in e.items() if k not in keys} if isinstance(e, dict) else e for e in entries]
     return result

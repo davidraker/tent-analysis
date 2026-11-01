@@ -29,7 +29,7 @@ from tent.transactive_node import LEGACY_NODE_KEYS, TransactiveNode
 from tent.utils.timer import Timer
 
 from tent_analysis.config import schema as S
-from tent_analysis.config.documents import placeholders, prepared, strip_docs
+from tent_analysis.config.documents import host_entries, placeholders, prepared, strip_docs
 
 LEVELS = ('placeholders', 'structure', 'semantics', 'construction')
 
@@ -56,10 +56,23 @@ class Unchecked:
         return f'[unchecked] {self.path or "node"}: {where}: {self.reason}'
 
 
+@dataclass(frozen=True)
+class HostKey:
+    """A key of the host application (the agent) found in a component entry: read and removed by the host before TENT
+    sees the configuration, so it is stripped before checking and listed, not reported as a problem."""
+    path: str
+    key: str
+    value: object
+
+    def __str__(self) -> str:
+        return f'[host] {self.path}.{self.key}: {self.value!r} is read by the host application, not by TENT'
+
+
 @dataclass
 class Report:
     problems: list[Problem] = field(default_factory=list)
     unchecked: list[Unchecked] = field(default_factory=list)
+    hosts: list[HostKey] = field(default_factory=list)
     levels: tuple[str, ...] = ()
 
     @property
@@ -70,15 +83,24 @@ class Report:
         self.problems.extend(other.problems)
         seen = {(u.path, u.class_name, u.module_name) for u in self.unchecked}
         self.unchecked.extend(u for u in other.unchecked if (u.path, u.class_name, u.module_name) not in seen)
+        known = {(h.path, h.key) for h in self.hosts}
+        self.hosts.extend(h for h in other.hosts if (h.path, h.key) not in known)
         self.levels = tuple(dict.fromkeys(self.levels + other.levels))
         return self
 
     def text(self) -> str:
-        lines = [str(p) for p in self.problems] + [str(u) for u in self.unchecked]
+        lines = [str(p) for p in self.problems] + [str(u) for u in self.unchecked] + [str(h) for h in self.hosts]
         summary = (f'{len(self.problems)} problem{"s" if len(self.problems) != 1 else ""}'
                    f' ({", ".join(self.levels)} checked)'
-                   + (f', {len(self.unchecked)} unchecked' if self.unchecked else ''))
+                   + (f', {len(self.unchecked)} unchecked' if self.unchecked else '')
+                   + (f', {len(self.hosts)} host key{"s" if len(self.hosts) != 1 else ""}' if self.hosts else ''))
         return '\n'.join(lines + [summary])
+
+
+def _host_report(config: dict, level: str) -> Report:
+    """A report for `level` that already lists the host keys the configuration carries."""
+    return Report(hosts=[HostKey(path, key, value) for path, key, value in host_entries(strip_docs(config))],
+                  levels=(level,))
 
 
 # ---------------------------------------------------------------------------------------------- level 0: placeholders
@@ -96,8 +118,8 @@ def validate_placeholders(config: dict) -> Report:
 
 def validate_structure(config: dict) -> Report:
     """The configuration against TENT's JSON Schema, entry by entry (see module docstring)."""
+    report = _host_report(config, 'structure')
     config = prepared(config)
-    report = Report(levels=('structure',))
     node = {key: ([] if key in S.NODE_LISTS else None if key == 'data_manager' else value)
             for key, value in config.items()}
     for error in _errors(S.node_schema(), node):
@@ -195,8 +217,8 @@ def _join(path: str, sub: str) -> str:
 def validate_semantics(config: dict) -> Report:
     """TENT's models, component by component, so one failing component (or one class from a package that is not
     installed) does not hide the rest. Messages are the models' own (ConfigurationError)."""
+    report = _host_report(config, 'semantics')
     config = prepared(config)
-    report = Report(levels=('semantics',))
     try:
         cfg = TransactiveNode.Config.validate_for('TransactiveNode', config)
     except ConfigurationError as error:

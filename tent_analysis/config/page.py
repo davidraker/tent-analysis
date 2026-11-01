@@ -110,6 +110,8 @@ def render() -> None:
         st.error(str(problem))
     for unchecked in report.unchecked:
         st.warning(str(unchecked))
+    for host in report.hosts:
+        st.caption(str(host))
     changes = D.diff_configs(original, document)
     if changes:
         st.subheader('Changes in this session')
