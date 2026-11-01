@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.viz.theme import Theme, color_map
+from tent_analysis.viz.theme import Theme, color_map, time_axis
 
 LINE = dict(width=2, shape='hv')
 
@@ -57,7 +57,7 @@ def price_timeline(prices: pd.DataFrame, revisions: pd.DataFrame | None = None, 
                                      hovertemplate='%{y:.4f} $/kWh<extra>' + str(series) + '</extra>'), row=i, col=1)
             shown.add(series)
         fig.update_yaxes(title_text='$/kWh', row=i, col=1)
-    fig.update_xaxes(title_text='Delivery interval start', row=len(rows), col=1)
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', prices['interval_start']), row=len(rows), col=1)
     theme.apply(fig, title=title, height=max(320, 220 * len(rows) + 100))
     if prices['market_series'].nunique() <= 1:
         fig.update_layout(showlegend=False)
@@ -96,7 +96,7 @@ def power_timeline(power: pd.DataFrame, net: pd.DataFrame | None = None, meters:
         fig.add_hline(y=0, line=dict(color=theme.ink['axis'], width=1), row=2, col=1)
         fig.update_yaxes(title_text='kW', row=2, col=1)
     fig.update_yaxes(title_text='kW (generation +, load -)', row=1, col=1)
-    fig.update_xaxes(title_text='Delivery interval start', row=rows, col=1)
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', power['interval_start']), row=rows, col=1)
     theme.apply(fig, title=title, height=520 if rows == 2 else 380)
     return fig
 

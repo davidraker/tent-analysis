@@ -80,10 +80,31 @@ class Catalog:
         df['unit'] = df['unit'].map(_enum_name)
         return df
 
+    @cached_property
+    def run_labels(self) -> dict:
+        """run_id -> actor label, for mapping a run_id column in one pass."""
+        return {run_id: str(actor) for run_id, actor in zip(self.runs['run_id'], self.runs['actor'])}
+
     def run_label(self, run_id) -> str:
-        runs = self.runs
-        row = runs[runs['run_id'] == run_id]
-        return str(row['actor'].iloc[0]) if not row.empty else str(run_id)
+        return self.run_labels.get(run_id, str(run_id))
+
+    @cached_property
+    def run_zones(self) -> dict:
+        """run_id -> IANA zone name the run was configured with (TransactiveNode.tz)."""
+        return dict(zip(self.runs['run_id'], self.runs['tz']))
+
+    @cached_property
+    def tz(self) -> str:
+        """The zone archive times are converted to: the source's override, else the single zone of the archive's runs.
+        Runs configured with different zones have no common local time; pass Source(tz=...) to choose one."""
+        if self.source.tz is not None:
+            return self.source.tz
+        zones = sorted({str(z) for z in self.run_zones.values() if z is not None and not pd.isna(z)})
+        if len(zones) == 1:
+            return zones[0]
+        if not zones:
+            raise ValueError(f'{self.source.label}: no run records a time zone; pass Source(tz=...)')
+        raise ValueError(f'{self.source.label}: runs use different time zones ({", ".join(zones)}); pass Source(tz=...)')
 
 
 def _enum_name(value):

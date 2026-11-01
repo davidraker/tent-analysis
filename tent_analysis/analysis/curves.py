@@ -189,7 +189,7 @@ def horizon_matrix(history: pd.DataFrame, measurement_type: str, owner: str | No
     matrix = (df.groupby(['interval_start', 'record_bin'], observed=False)[value].last().unstack('record_bin')
               .ffill(axis=1))
     matrix.index.name = 'interval_start'
-    matrix.columns = pd.to_datetime(matrix.columns.astype(str))
+    matrix.columns = pd.DatetimeIndex([pd.Timestamp(c) for c in matrix.columns])  # bin starts, zone kept
     return matrix
 
 
@@ -198,7 +198,7 @@ def consensus(measurements: pd.DataFrame) -> pd.DataFrame:
     df = measurements[measurements['measurement_type'] == 'FullConsensus']
     if df.empty:
         return pd.DataFrame(columns=['source', 'actor', 'run_id', 'market_series', 'interval_start', 'consensus', 'record_time'])
-    out = df.sort_values('record_time').groupby(['source', 'actor', 'run_id', 'market_series', 'interval_start'],
-                                                as_index=False, sort=False).last()
+    out = df.sort_values('record_time').drop_duplicates(['source', 'actor', 'run_id', 'market_series', 'interval_start'],
+                                                        keep='last').reset_index(drop=True)
     out['consensus'] = out['value'].astype(float) >= 0.5
     return out[['source', 'actor', 'run_id', 'market_series', 'interval_start', 'consensus', 'record_time']]

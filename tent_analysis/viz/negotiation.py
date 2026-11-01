@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tent_analysis.viz.theme import SEQUENTIAL, STATUS, Theme, color_map
+from tent_analysis.viz.theme import SEQUENTIAL, STATUS, Theme, color_map, time_axis
 from tent_analysis.viz.timelines import LINE, _alpha, _row_titles, add_state_bands
 
 STATE_ORDER = ['Initial', 'Inactive', 'Active', 'Negotiation', 'MarketLead', 'DeliveryLead', 'Delivery', 'Reconcile',
@@ -28,7 +28,7 @@ def negotiation_trace(history: pd.DataFrame, measurement_type: str, interval_sta
                                  hovertemplate='%{y:,.4f} ' + unit + '<extra>' + str(owner) + '</extra>'))
     if state_changes is not None and market_name:
         add_state_bands(fig, state_changes, market_name, theme)
-    fig.update_xaxes(title_text='Record time')
+    fig.update_xaxes(title_text=time_axis('Record time', history['record_time']))
     fig.update_yaxes(title_text=f'{measurement_type} {unit}'.strip())
     theme.apply(fig, title=f'Negotiation of {measurement_type}, interval {pd.Timestamp(interval_start):%b %d %H:%M}',
                 height=400)
@@ -47,8 +47,8 @@ def horizon_heatmap(matrix: pd.DataFrame, theme: Theme | None = None, title: str
                                              tickfont=dict(color=theme.ink['muted'])),
                                hovertemplate='known at %{x}<br>interval %{y}<br>%{z:,.4f} ' + unit + '<extra></extra>',
                                xgap=1, ygap=1))
-    fig.update_xaxes(title_text='Record time', showgrid=False)
-    fig.update_yaxes(title_text='Delivery interval start', showgrid=False)
+    fig.update_xaxes(title_text=time_axis('Record time', matrix.columns), showgrid=False)
+    fig.update_yaxes(title_text=time_axis('Delivery interval start', matrix.index), showgrid=False)
     theme.apply(fig, title=title, height=max(360, 18 * len(matrix.index) + 140))
     fig.update_layout(hovermode='closest')
     return fig
@@ -78,7 +78,7 @@ def convergence_panel(conv: pd.DataFrame, colors: dict | None = None, theme: The
     fig.update_layout(barmode='stack', bargap=0.15)
     fig.update_yaxes(title_text='revisions', row=1, col=1)
     fig.update_yaxes(showgrid=False, row=2, col=1)
-    fig.update_xaxes(title_text='Delivery interval start', row=2, col=1)
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', conv['interval_start']), row=2, col=1)
     theme.apply(fig, title='Negotiation convergence', height=460)
     return fig
 
@@ -101,7 +101,7 @@ def market_timeline(segments: pd.DataFrame, theme: Theme | None = None, title: s
                              hovertemplate='%{customdata[0]}<br>%{customdata[1]} to %{customdata[2]}<extra>%{y}</extra>'))
         shown.add(seg['state'])
     fig.update_layout(barmode='overlay', bargap=0.35)
-    fig.update_xaxes(type='date', title_text='Time')
+    fig.update_xaxes(type='date', title_text=time_axis('Time', segments['start']))
     fig.update_yaxes(categoryorder='array', categoryarray=markets[::-1], title_text='')
     theme.apply(fig, title=title, height=max(300, 36 * len(markets) + 160))
     fig.update_layout(hovermode='closest')
@@ -120,7 +120,7 @@ def consensus_strip(consensus: pd.DataFrame, theme: Theme | None = None) -> go.F
                                  marker=dict(symbol='square', size=10, color=color,
                                              line=dict(color=theme.ink['surface'], width=1)),
                                  hovertemplate=label + '<extra>%{y}</extra>'))
-    fig.update_xaxes(title_text='Delivery interval start')
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', consensus['interval_start']))
     fig.update_yaxes(showgrid=False, title_text='')
     theme.apply(fig, title='Full consensus by interval', height=max(240, 40 * consensus['market_series'].nunique() + 160))
     fig.update_layout(hovermode='closest')
@@ -140,6 +140,6 @@ def device_panel(topics: pd.DataFrame, theme: Theme | None = None, title: str = 
         fig.add_trace(go.Scatter(x=part['ts'], y=values, mode='lines', name=name, showlegend=False,
                                  line=dict(color=colors[name], width=2),
                                  hovertemplate='%{y}<extra>' + name + '</extra>'), row=i, col=1)
-    fig.update_xaxes(title_text='Time', row=len(names), col=1)
+    fig.update_xaxes(title_text=time_axis('Time', topics['ts']), row=len(names), col=1)
     theme.apply(fig, title=title, height=max(300, 150 * len(names) + 100))
     return fig

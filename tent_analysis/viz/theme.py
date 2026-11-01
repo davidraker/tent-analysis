@@ -5,6 +5,7 @@ Palette values are the skill's validated reference palette (references/palette.m
 """
 from dataclasses import dataclass, field
 
+import pandas as pd
 import plotly.graph_objects as go
 
 CATEGORICAL = {
@@ -77,3 +78,17 @@ def color_map(names, theme: Theme | None = None) -> dict[str, str]:
     colors = {name: palette[i] for i, name in enumerate(unique[:len(palette)])}
     colors.update({name: OTHER[theme.mode] for name in unique[len(palette):]})
     return colors
+
+
+def zone_name(values) -> str:
+    """The zone of a datetime column or index as text for an axis title ('UTC', 'America/Los_Angeles'). Loader frames
+    are always zoned (the source's zone); naive values would mislabel the axis, so they raise."""
+    tz = values.dt.tz if hasattr(values, 'dt') else getattr(values, 'tz', None)
+    if tz is None:
+        raise ValueError('time values must be timezone-aware to label the axis')
+    return str(tz)
+
+
+def time_axis(label: str, values) -> str:
+    """Axis title for a time axis: the label with the zone in parentheses."""
+    return f'{label} ({zone_name(values)})'

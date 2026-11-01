@@ -1,5 +1,7 @@
 """Tidy loaders. Every loader returns a long-format DataFrame with stable column names and carries `source`, `actor`
-and `run_id` so frames from several sources can be concatenated and compared."""
+and `run_id` so frames from several sources can be concatenated and compared. Archive times are stored in UTC; every
+time column a loader returns is converted to the source's zone (Catalog.tz: the runs' configured zone, or the
+Source(tz=...) override), so hour-of-day and weekday bins and axis labels read in local time."""
 import json
 from datetime import datetime
 from typing import Iterable, Sequence
@@ -19,6 +21,14 @@ def _names(values) -> list | None:
     if values is None:
         return None
     return [getattr(v, 'name', v) for v in values]
+
+
+def _in_zone(df: pd.DataFrame, source: Source, columns: Sequence[str]) -> pd.DataFrame:
+    """Convert the zoned time columns of a non-empty frame to the source's zone."""
+    zone = source.catalog.tz
+    for column in columns:
+        df[column] = pd.to_datetime(df[column], utc=True).dt.tz_convert(zone)
+    return df
 
 
 def load_measurements(source: Source, types: Iterable = None, owners: Sequence[str] = None, start: datetime = None,
@@ -46,7 +56,8 @@ def load_measurements(source: Source, types: Iterable = None, owners: Sequence[s
     markets = catalog.markets[['id', 'series_name']].rename(columns={'id': 'market_id', 'series_name': 'market_series'})
     df = df.merge(headers, on='measurement_id', how='left').merge(markets, on='market_id', how='left')
     df['source'] = source.label
-    df['actor'] = df['run_id'].map(catalog.run_label)
+    df['actor'] = df['run_id'].map(catalog.run_labels)
+    df = _in_zone(df, source, ['interval_start', 'interval_end', 'record_time'])
     return df[MEASUREMENT_COLUMNS].sort_values(['owner_name', 'measurement_type', 'interval_start', 'record_time']) \
         .reset_index(drop=True)
 
@@ -90,7 +101,8 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
     df = df.merge(markets, on='market_id', how='left')
     df['direction'] = df['measurement_id'].map(_signal_directions(source))
     df['source'] = source.label
-    df['actor'] = df['run_id'].map(catalog.run_label)
+    df['actor'] = df['run_id'].map(catalog.run_labels)
+    df = _in_zone(df, source, ['interval_start', 'record_time'])
     return df[CURVE_COLUMNS].sort_values(['owner_name', 'interval_start', 'record_time', 'record']).reset_index(drop=True)
 
 
@@ -113,6 +125,7 @@ def load_state_changes(source: Source) -> pd.DataFrame:
     df = df.merge(markets, on='market_id', how='left')
     df['state'] = df['state'].map(_enum_name)
     df['source'] = source.label
+    df = _in_zone(df, source, ['record_time'])
     return df[['source', 'market_id', 'market_name', 'market_series', 'state', 'record_time']]
 
 
@@ -133,6 +146,7 @@ def load_meter_readings(source: Source, meters: Sequence[str] = None) -> pd.Data
     df['measurement_type'] = df['measurement_type'].map(_enum_name)
     df['unit'] = df['unit'].map(_enum_name)
     df['source'] = source.label
+    df = _in_zone(df, source, ['reading_time'])
     return df[columns]
 
 
@@ -151,6 +165,7 @@ def load_historian_topics(source: Source, pattern: str = '%') -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     df['value'] = df['value_string'].map(_decode_historian_value)
     df['source'] = source.label
+    df = _in_zone(df, source, ['ts'])
     return df[columns]
 
 
@@ -203,6 +218,7 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
         columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series'})
     df = df.merge(markets, on='market_id', how='left').rename(columns={'tn_id': 'run_id'})
     df['source'] = source.label
-    df['actor'] = df['run_id'].map(catalog.run_label)
+    df['actor'] = df['run_id'].map(catalog.run_labels)
+    df = _in_zone(df, source, ['signal_time', 'interval_start', 'record_time'])
     return df[SIGNAL_COLUMNS].sort_values(['neighbor_name', 'interval_start', 'direction', 'record_time', 'record']) \
         .reset_index(drop=True)

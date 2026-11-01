@@ -24,7 +24,7 @@ def _mock_tn_class():
     return module.MockTN
 
 
-def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1) -> dict:
+def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1, tz: str = 'UTC') -> dict:
     MockTN = _mock_tn_class()
     rng = random.Random(seed)
     Timer.simulation = False
@@ -33,6 +33,7 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1)
     configs['data_manager']['db_params']['url'] = url
     configs['actor_id'] = actor
     configs['organization_id'] = 'PNNL'
+    configs['tz'] = tz
     tn = MockTN()
     tn.configure_node(configs)
     for _ in range(2):
@@ -123,3 +124,11 @@ def source(archive_url):
 @pytest.fixture(scope='session')
 def variant(variant_url):
     return Source(variant_url, label='campus_b')
+
+
+@pytest.fixture(scope='session')
+def pacific(tmp_path_factory):
+    """The same kind of archive, from a node configured in America/Los_Angeles."""
+    url = f'sqlite:///{tmp_path_factory.mktemp("archive") / "campus_pacific.sqlite"}'
+    build_archive(url, actor='campus-P', tz='America/Los_Angeles')
+    return Source(url, label='campus_pacific')

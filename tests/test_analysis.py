@@ -61,3 +61,24 @@ def test_compare_runs(source, variant):
     assert set(cmp['source']) == {'campus_b'} and (cmp['baseline'] == 'campus_a').all()
     assert (cmp['delta'] > 0).all(), 'the variant archive was generated with prices 20% higher'
     assert cmp['delta_pct'].round(0).eq(20.0).all()
+
+
+def test_latest_row_is_taken_whole():
+    """The newest version wins as a row: a null in it is not back-filled from an older version."""
+    t = pd.to_datetime(['2017-07-01T00:00Z', '2017-07-01T00:01Z'])
+    frame = pd.DataFrame({'source': 'a', 'actor': 'a', 'run_id': 'r', 'market_series': 's', 'measurement_type': 'MarginalPrice',
+                          'interval_start': pd.Timestamp('2017-07-01T01:00Z'), 'interval_end': [pd.Timestamp('2017-07-01T02:00Z'), pd.NaT],
+                          'record_time': t, 'value': [0.05, 0.07]})
+    out = cleared_prices(frame)
+    assert len(out) == 1 and out['price'].iloc[0] == 0.07 and pd.isna(out['interval_end'].iloc[0])
+    assert out['record_time'].iloc[0] == t[1]
+
+
+def test_compare_runs_zero_baseline():
+    base = pd.DataFrame({'source': 'base', 'hour': [1, 2], 'cost': [0.0, 10.0]})
+    variant = pd.DataFrame({'source': 'v', 'hour': [1, 2], 'cost': [5.0, 15.0]})
+    cmp = compare_runs(pd.concat([base, variant]), baseline='base', value='cost', keys=['hour'])
+    assert list(cmp['delta']) == [5.0, 5.0]
+    assert pd.isna(cmp['delta_pct'].iloc[0]) and cmp['delta_pct'].iloc[1] == pytest.approx(50.0)
+    assert str(cmp['delta_pct'].dtype).startswith('float'), 'no object dtype from the NA replacement'
+    assert compare_runs(variant, baseline='missing', value='cost', keys=['hour']).empty

@@ -10,7 +10,9 @@ MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'Augus
 
 
 def _latest_per_interval(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    return (df.sort_values('record_time').groupby(keys, as_index=False, sort=False).last())
+    """The newest row (by record_time) per key, taken whole: a null in the newest row stays null rather than being
+    filled from an older version, which is what groupby().last() would do column by column."""
+    return df.sort_values('record_time').drop_duplicates(keys, keep='last').reset_index(drop=True)
 
 
 def cleared_prices(measurements: pd.DataFrame) -> pd.DataFrame:
@@ -117,11 +119,6 @@ def compare_runs(frames: pd.DataFrame, baseline: str, value: str, keys: list[str
     out = variants.merge(base, on=keys, how='inner')
     out['baseline'] = baseline
     out['delta'] = out[value] - out[f'{value}_baseline']
-    with pd.option_context('mode.use_inf_as_na', True) if hasattr(pd, 'option_context') and False else _noop():
-        out['delta_pct'] = (out['delta'] / out[f'{value}_baseline'].replace(0, pd.NA)) * 100.0
+    base = out[f'{value}_baseline'].astype(float)
+    out['delta_pct'] = out['delta'] / base.where(base != 0) * 100.0  # NaN where the baseline is zero
     return out[columns]
-
-
-class _noop:
-    def __enter__(self): return self
-    def __exit__(self, *a): return False

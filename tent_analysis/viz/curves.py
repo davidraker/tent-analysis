@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from tent_analysis.analysis.curves import POSITIONS, from_local_side, single_curve
-from tent_analysis.viz.theme import Theme, color_map
+from tent_analysis.viz.theme import Theme, color_map, time_axis
 from tent_analysis.viz.timelines import _alpha, _row_titles
 
 MARKER = dict(size=8, line=dict(width=2))
@@ -156,7 +156,7 @@ def bid_position_figure(power_with_position: pd.DataFrame, theme: Theme | None =
                                      hovertemplate='%{y:,.1f} kW, ' + position + '<extra>' + owner + '</extra>'),
                           row=i, col=1)
         fig.update_yaxes(title_text='kW', row=i, col=1)
-    fig.update_xaxes(title_text='Delivery interval start', row=len(owners), col=1)
+    fig.update_xaxes(title_text=time_axis('Delivery interval start', power_with_position['interval_start']), row=len(owners), col=1)
     theme.apply(fig, title=title or 'Schedule position within own curve', height=max(360, 200 * len(owners) + 100))
     fig.update_layout(hovermode='closest')
     return fig

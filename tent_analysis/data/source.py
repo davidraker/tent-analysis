@@ -26,8 +26,11 @@ class Schema:
 
 @dataclass
 class Source:
+    """`tz` overrides the zone the loaders convert archive times to; by default it is the zone the archive's runs were
+    configured with (TransactiveNode.tz), which must agree across runs."""
     url: str
     label: str | None = None
+    tz: str | None = None
     reader: LocalDataManager = field(default=None, repr=False)
 
     def __post_init__(self):
