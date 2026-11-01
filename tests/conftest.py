@@ -34,6 +34,11 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
     Timer.simulation = False
     with open(SAMPLE_CONFIG) as f:
         configs = json.load(f)
+    # TENT's sample config names its weather file relative to the TENT repository root; resolve it from here.
+    for service in configs.get('information_service_models') or []:
+        path = service.get('weather_file_path')
+        if path and not Path(path).is_absolute():
+            service['weather_file_path'] = str(TENT_ROOT / path)
     configs['data_manager']['db_params']['url'] = url
     configs['actor_id'] = actor
     configs['organization_id'] = 'PNNL'
