@@ -67,21 +67,12 @@ def test_sample_configuration_passes_every_level(sample):
     assert report.text() == '0 problems (structure, semantics, construction checked)'
 
 
-# TENT's WeeklySchedule publishes lowercase weekday names with additionalProperties false, while its validator
-# (parse_weekday) also accepts the capitalised names the deployed configurations use. The models accept the files; the
-# schema TENT derives from them does not. Recorded exactly, so this special case goes when TENT's schema matches.
-SCHEDULE_SCHEMA_DEVIATION = ("Additional properties are not allowed ('Friday', 'Monday', 'Saturday', 'Sunday', "
-                             "'Thursday', 'Tuesday', 'Wednesday' were unexpected)")
-
-
 @pytest.mark.parametrize('path', DEPLOYED, ids=lambda p: Path(p).parent.parent.name)
 def test_deployed_configurations_validate(path):
     config = load(path)
     assert checks.validate_semantics(config).ok, checks.validate_semantics(config).text()
     structure = checks.validate_structure(config)
-    schedules = [i for i, a in enumerate(config['local_assets']) if 'occupancy_manager' in a and 'Monday' in a['occupancy_manager'].get('schedule', {})]
-    assert [(p.path, p.message) for p in structure.problems] == \
-        [(f'local_assets[{i}].occupancy_manager.schedule', SCHEDULE_SCHEMA_DEVIATION) for i in schedules]
+    assert structure.ok, structure.text()  # the deployed files follow the schema exactly (weekday names lowercase)
     report = checks.validate(config)
     # Classes from the VOLTTRON agent package are reported as unchecked here, never as problems.
     assert all('transactive_node' in (u.module_name or '') or 'transactive_node' in u.reason for u in report.unchecked), report.unchecked
