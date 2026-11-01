@@ -1,4 +1,7 @@
 """New configuration entries from the schema: every field with its default, and the field descriptions under DOC_KEY."""
+import json
+from importlib import resources
+
 from tent_analysis.config import schema as S
 from tent_analysis.config.documents import DOC_KEY
 
@@ -104,3 +107,74 @@ def slots() -> dict[str, list[str]]:
     """Slot -> registered class names (variant titles for market series, which name both classes)."""
     return {slot: sorted(S.registered_variants(slot)) for slot in sorted({*S.SLOTS.values(), 'PriceModel', 'Model',
                                                                           'ActuationManager', 'OccupancyManager'})}
+
+
+# ------------------------------------------------------------------------------------- whole-node templates
+
+TEMPLATES_DIR = resources.files('tent_analysis.config') / 'templates'
+"""Node templates: the TENT sample (campus) and the configurations deployed in the simulation containers (city, the
+small office with direct-ratio actuation, and the one driven by the ILC agent), with their deployment paths replaced by
+placeholders (documents.PLACEHOLDER_PREFIX) that validate reports until they are filled."""
+
+
+def template_names() -> list[str]:
+    return sorted(path.stem for path in TEMPLATES_DIR.iterdir() if path.name.endswith('.json'))
+
+
+def document(config: dict) -> dict:
+    """A copy of a configuration with DOC_KEY descriptions added to the node and to every entry whose class the schema
+    knows (an entry of an unregistered class is left as it is)."""
+    schema = S.node_schema()
+    result = dict(config)
+    result[DOC_KEY] = {name: _doc_line(name, prop, name in set(schema.get('required', [])))
+                       for name, prop in schema['properties'].items()}
+    for list_name, slot in S.SLOTS.items():
+        value = result.get(list_name)
+        fragment = schema['properties'][list_name]
+        if isinstance(value, dict):
+            result[list_name] = _document_entry(value, slot, fragment)
+        elif isinstance(value, list):
+            result[list_name] = [_document_entry(e, slot, fragment) if isinstance(e, dict) else e for e in value]
+    return result
+
+
+def _document_entry(entry: dict, slot: str, fragment: dict) -> dict:
+    variant = S.variant_for(slot, entry, fragment)
+    if variant is None:
+        return entry
+    required = set(variant.get('required', []))
+    documented = dict(entry)
+    documented[DOC_KEY] = {name: _doc_line(name, prop, name in required) for name, prop in variant['properties'].items()
+                           if name in entry and name not in S.RUNTIME_KEYS}
+    return documented
+
+
+def new(name: str, doc: bool = True) -> dict:
+    """A node configuration from the template `name` (see template_names), documented unless `doc` is False."""
+    path = TEMPLATES_DIR / f'{name}.json'
+    if name not in template_names():
+        raise ValueError(f'{name!r} is not a template; the templates are {template_names()}')
+    config = json.loads(path.read_text(encoding='utf-8'))
+    return document(config) if doc else config
+
+
+def add_entry(config: dict, list_name: str, class_name: str, market_class_name: str | None = None,
+              name: str | None = None, doc: bool = False) -> dict:
+    """A copy of `config` with a template entry for `class_name` appended to `list_name` (data_manager is replaced),
+    named `name` (default: the class name). An entry of that name in the list is an error: names are how components
+    refer to each other and how a running node matches a new configuration to its components."""
+    if list_name not in S.SLOTS:
+        raise ValueError(f'{list_name!r} is not a component list; the lists are {sorted(S.SLOTS)}')
+    entry = template(S.SLOTS[list_name], class_name, market_class_name, doc=doc)
+    result = dict(config)
+    if list_name == 'data_manager':
+        result['data_manager'] = entry
+        return result
+    entry['name'] = name or class_name
+    entries = list(result.get(list_name) or [])
+    taken = {e.get('name') for e in entries if isinstance(e, dict)}
+    if entry['name'] in taken:
+        raise ValueError(f'{list_name} already has an entry named {entry["name"]!r}; give --name another name')
+    entries.append(entry)
+    result[list_name] = entries
+    return result

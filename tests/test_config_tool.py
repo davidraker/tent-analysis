@@ -63,8 +63,8 @@ def test_iter_specs_finds_nested_blocks(sample):
 
 def test_sample_configuration_passes_every_level(sample):
     report = checks.validate(sample, construct=True, base_dir=TENT)
-    assert report.ok and report.levels == ('structure', 'semantics', 'construction') and not report.unchecked
-    assert report.text() == '0 problems (structure, semantics, construction checked)'
+    assert report.ok and report.levels == ('placeholders', 'structure', 'semantics', 'construction') and not report.unchecked
+    assert report.text() == '0 problems (placeholders, structure, semantics, construction checked)'
 
 
 @pytest.mark.parametrize('path', DEPLOYED, ids=lambda p: Path(p).parent.parent.name)
@@ -74,6 +74,14 @@ def test_deployed_configurations_validate(path):
     structure = checks.validate_structure(config)
     assert structure.ok, structure.text()  # the deployed files follow the schema exactly (weekday names lowercase)
     report = checks.validate(config)
+    # The agent's per-neighbor sender key is stripped before TENT's models see the file, as the agent does.
+    assert any('sender' in n for n in config['neighbors']), 'the deployed files carry the host key'
+    assert all('sender' not in n for n in documents.prepared(config)['neighbors'])
+    changed = deepcopy(config)
+    changed['neighbors'][0]['sender'] = 'someone@elsewhere'
+    sender_changes = diff_configs(config, changed)
+    assert [(c.path, c.reconfigurable) for c in sender_changes] == ['neighbors[0].sender', None][0:1] + [None] if False else \
+        [(c.reconfigurable, 'host application key' in c.reason) for c in sender_changes] == [(None, True)]
     # Classes from outside TENT (the VOLTTRON agent package and the volttron_archivable data manager) are reported as
     # unchecked here, never as problems.
     outside = ('transactive_node', 'volttron_archivable')
@@ -151,7 +159,7 @@ def test_validate_runs_construction_only_when_the_models_accept(sample):
     broken = deepcopy(sample)
     broken['neighbors'][0]['loss_factr'] = 0.1
     report = checks.validate(broken, construct=True, base_dir=TENT)
-    assert report.levels == ('structure', 'semantics') and not report.ok
+    assert report.levels == ('placeholders', 'structure', 'semantics') and not report.ok
     assert {p.level for p in report.problems} == {'structure', 'semantics'}
 
 
@@ -373,7 +381,7 @@ def test_migrate_cli_reports_what_the_models_still_reject(tmp_path, capsys):
 
 def test_validate_cli(tmp_path, capsys, sample):
     assert main(['validate', str(SAMPLE), '--construct', '--base-dir', str(TENT)]) == 0
-    assert capsys.readouterr().out.strip() == '0 problems (structure, semantics, construction checked)'
+    assert capsys.readouterr().out.strip() == '0 problems (placeholders, structure, semantics, construction checked)'
     broken = deepcopy(sample)
     broken['neighbors'][0]['loss_factor'] = 2.0
     documents.dump(broken, tmp_path / 'broken.json')
@@ -405,3 +413,135 @@ def test_field_specs_describe_a_variant():
     assert apply(entry, {**untouched, 'loss_factor': 0.05, 'friend': True}, neighbor_specs) == \
         {'class_name': 'Neighbor', 'loss_factor': 0.05, 'friend': True}
     assert apply(entry, {**untouched, 'loss_factor': None}, neighbor_specs)['loss_factor'] is None
+
+
+# --- whole-node templates, add, steps, docs ---------------------------------------------------------------------------
+
+from tent_analysis.config import PLACEHOLDER_PREFIX, add_entry, new, placeholders, template_names  # noqa: E402
+from tent_analysis.config.docs import render, write_docs  # noqa: E402
+
+WEATHER = TENT / 'sample_configs' / 'temperature_forecast_model' / 'pasco_2017_dry_bulb_temperature.csv'
+
+
+def test_template_names():
+    assert template_names() == ['campus', 'city', 'small-office', 'small-office-ilc']
+    with pytest.raises(ValueError, match='not a template'):
+        new('village')
+
+
+@pytest.mark.parametrize('name', ['campus', 'city', 'small-office', 'small-office-ilc'])
+def test_node_templates_validate_at_every_level_available_here(name):
+    config = new(name)
+    assert DOC_KEY in config and all(DOC_KEY in e for e in config['neighbors'] if e.get('class_name') == 'Neighbor')
+    assert 'loss_factor' in config['neighbors'][0][DOC_KEY]
+    plain = strip_docs(config)
+    assert plain == new(name, doc=False)
+    # Deployment paths are placeholders, which validate lists until they are filled; otherwise the models accept it.
+    marked = placeholders(plain)
+    assert {path for path, _ in marked} == {'data_manager.db_params.url', 'information_service_models[0].weather_file_path'}
+    assert all(text.startswith(PLACEHOLDER_PREFIX) for _, text in marked)
+    report = checks.validate(plain)
+    assert [p.path for p in report.problems] == [path for path, _ in marked] and all(p.level == 'placeholders' for p in report.problems)
+    assert checks.validate_structure(plain).ok and checks.validate_semantics(plain).ok
+    outside = ('transactive_node',)
+    assert all(any(n in (u.module_name or '') or n in u.reason for n in outside) for u in report.unchecked), report.unchecked
+    plain['information_service_models'][0]['weather_file_path'] = str(WEATHER)
+    plain['data_manager'] = {'class_name': 'NullDataManager'}
+    if report.unchecked:  # the small offices name the VOLTTRON agent's classes, which cannot be built here
+        assert not checks.validate(plain, construct=True).ok
+        return
+    stepped = checks.validate(plain, construct=True, steps=4)
+    assert stepped.ok, stepped.text()
+    assert stepped.levels == ('placeholders', 'structure', 'semantics', 'construction')
+
+
+def test_new_cli(tmp_path, capsys):
+    assert main(['new', '--template', 'city', '--out', str(tmp_path / 'city.json')]) == 0
+    city = load(tmp_path / 'city.json')
+    assert city['name'] == 'CoR' and DOC_KEY in city
+    assert main(['validate', str(tmp_path / 'city.json')]) == 1
+    out = capsys.readouterr().out
+    assert '[placeholders] information_service_models[0].weather_file_path: still to fill: <FILL:' in out
+    assert main(['new', '--template', 'campus', '--no-doc']) == 0
+    assert DOC_KEY not in json.loads(capsys.readouterr().out)
+
+
+def test_add_appends_a_named_entry_and_refuses_a_duplicate(sample):
+    added = add_entry(sample, 'neighbors', 'BulkSupplierDC', name='BPA')
+    assert [n['name'] for n in added['neighbors']] == ['CoR', 'SMALL_OFFICE_ILC', 'SMALL_OFFICE_DR', 'BPA']
+    assert added['neighbors'][-1]['class_name'] == 'BulkSupplierDC' and DOC_KEY not in added['neighbors'][-1]
+    assert len(sample['neighbors']) == 3, 'the input is not modified'
+    assert checks.validate(added).ok
+    with pytest.raises(ValueError, match="already has an entry named 'CoR'"):
+        add_entry(sample, 'neighbors', 'Neighbor', name='CoR')
+    with pytest.raises(ValueError, match='not a component list'):
+        add_entry(sample, 'things', 'Neighbor')
+    series = add_entry(sample, 'market_series', 'MarketSeries', 'MatchingEngine', name='Engine', doc=True)
+    assert series['market_series'][-1]['market_class_name'] == 'MatchingEngine' and DOC_KEY in series['market_series'][-1]
+    assert checks.validate(series).ok
+    archive = add_entry(sample, 'data_manager', 'NullDataManager')['data_manager']
+    assert archive['class_name'] == 'NullDataManager' and archive['archival_buffer_length'] == 10000 and DOC_KEY not in archive
+    assert add_entry(sample, 'local_assets', 'SolarPvResource')['local_assets'][-1]['name'] == 'SolarPvResource'
+
+
+def test_add_cli(sample, tmp_path, capsys):
+    documents.dump(sample, tmp_path / 'c.json')
+    assert main(['add', str(tmp_path / 'c.json'), '--list', 'neighbors', '--class', 'Neighbor', '--name', 'Extra']) == 0
+    assert [n['name'] for n in load(tmp_path / 'c.json')['neighbors']][-1] == 'Extra'
+    assert main(['add', str(tmp_path / 'c.json'), '--list', 'neighbors', '--class', 'Neighbor', '--name', 'Extra']) == 2
+    assert "already has an entry named 'Extra'" in capsys.readouterr().err
+    # A class with required fields: the entry is written and the problems to resolve are reported, exit 1.
+    assert main(['add', str(tmp_path / 'c.json'), '--list', 'local_assets', '--class', 'OpenLoopLoadPredictor',
+                 '--name', 'Loads', '--out', str(tmp_path / 'd.json')]) == 1
+    err = capsys.readouterr().err
+    assert 'local_assets[2]' in err and 'dow_intercept' in err
+    assert load(tmp_path / 'd.json')['local_assets'][-1]['name'] == 'Loads' and len(load(tmp_path / 'c.json')['local_assets']) == 2
+
+
+def test_steps_run_the_markets_and_catch_a_raising_component(sample, monkeypatch):
+    from tent.market.auction import Auction
+    report = checks.validate_construction(sample, base_dir=TENT, steps=4)
+    assert report.ok, report.text()
+    from tent.utils.timer import Timer
+    seen = []
+    original = Auction.events
+
+    def events(self):  # every market's events runs once per iteration; the fault appears at the second instant
+        seen.append(Timer.now())
+        if Timer.now().hour == 1 and Timer.now().minute == 45:
+            raise RuntimeError('the auction could not clear')
+        return original(self)
+
+    monkeypatch.setattr(Auction, 'events', events)
+    report = checks.validate_construction(sample, base_dir=TENT, steps=4)
+    assert [p.path for p in report.problems] == ['step 2'], report.text()
+    assert 'RuntimeError: the auction could not clear' in report.problems[0].message and 'at 2017-07-01T01:45:00+00:00' in report.problems[0].message
+    assert len({t for t in seen}) == 2, 'the first raising iteration ends the run: no later instant was reached'
+    no_series = {**strip_docs(sample), 'market_series': []}
+    report = checks.validate_construction(no_series, base_dir=TENT, steps=2)
+    assert [(p.path, p.message) for p in report.problems] == [('step 1', 'the configuration has no market series to step')]
+
+
+def test_validate_cli_steps(capsys):
+    assert main(['validate', str(SAMPLE), '--steps', '3', '--base-dir', str(TENT)]) == 0
+    assert 'construction checked' in capsys.readouterr().out
+
+
+def test_docs_page_lists_every_registered_class(tmp_path):
+    md = render('md')
+    rst = render('rst')
+    for slot in ('DataManager', 'MeterPoint', 'InformationServiceModel', 'LocalAsset', 'Neighbor', 'MarketSeries',
+                 'PriceModel', 'Model', 'ActuationManager', 'OccupancyManager'):
+        for variant in S.slot_variants(slot):
+            assert f'### {variant["title"]}\n' in md and f'\n{variant["title"]}\n{"~" * len(variant["title"])}\n' in rst
+    assert md.startswith('# Configuring a node\n') and rst.startswith('==================\nConfiguring a node\n==================\n')
+    assert '| loss_factor | number | 0.01 | >= 0, < 1 |' in md and '| yes |' in md
+    assert '``interval_duration``\n     - number [seconds]' in rst
+    assert '| meter_points | array or null | None | names of meter_points |' in md
+    assert '| up_or_down | one of "bidirectional", "downstream", "unknown", "upstream" |' in md
+    sections = [line for line in md.splitlines() if line.startswith('## ')]
+    assert len(sections) == 1 + len(S.SLOTS) + 4, 'node settings, data manager, five lists, four nested slots'
+    assert write_docs(tmp_path / 'docs', 'rst').read_text() == rst and (tmp_path / 'docs' / 'configuring_a_node.rst').exists()
+    assert main(['docs', '--out', str(tmp_path / 'md')]) == 0 and (tmp_path / 'md' / 'configuring_a_node.md').read_text() == md
+    with pytest.raises(ValueError, match='format'):
+        render('html')

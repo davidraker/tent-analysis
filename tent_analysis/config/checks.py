@@ -11,7 +11,8 @@ Three-level validation of a node configuration, each level reporting path -> mes
 
 A class the configuration names from a package that is not installed here (the VOLTTRON agent's data manager, meter
 points and actuation managers) cannot be checked: it is reported as unchecked, not as a problem, and the rest of the
-file is still checked.
+file is still checked. Keys the host application reads and removes before TENT sees the configuration (a neighbor's
+sender, see documents.HOST_KEYS) are stripped first, as the host does.
 """
 import contextlib
 import logging
@@ -19,6 +20,7 @@ import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 from tent import registry
@@ -27,9 +29,9 @@ from tent.transactive_node import LEGACY_NODE_KEYS, TransactiveNode
 from tent.utils.timer import Timer
 
 from tent_analysis.config import schema as S
-from tent_analysis.config.documents import strip_docs
+from tent_analysis.config.documents import placeholders, prepared, strip_docs
 
-LEVELS = ('structure', 'semantics', 'construction')
+LEVELS = ('placeholders', 'structure', 'semantics', 'construction')
 
 
 @dataclass(frozen=True)
@@ -79,11 +81,22 @@ class Report:
         return '\n'.join(lines + [summary])
 
 
+# ---------------------------------------------------------------------------------------------- level 0: placeholders
+
+def validate_placeholders(config: dict) -> Report:
+    """Every template placeholder (documents.PLACEHOLDER_PREFIX) still in the file: a path or URL of the deployment
+    that must be filled before the configuration is complete."""
+    report = Report(levels=('placeholders',))
+    for path, text in placeholders(strip_docs(config)):
+        report.problems.append(Problem('placeholders', path, f'still to fill: {text}'))
+    return report
+
+
 # ------------------------------------------------------------------------------------------------- level 1: structure
 
 def validate_structure(config: dict) -> Report:
     """The configuration against TENT's JSON Schema, entry by entry (see module docstring)."""
-    config = strip_docs(config)
+    config = prepared(config)
     report = Report(levels=('structure',))
     node = {key: ([] if key in S.NODE_LISTS else None if key == 'data_manager' else value)
             for key, value in config.items()}
@@ -182,7 +195,7 @@ def _join(path: str, sub: str) -> str:
 def validate_semantics(config: dict) -> Report:
     """TENT's models, component by component, so one failing component (or one class from a package that is not
     installed) does not hide the rest. Messages are the models' own (ConfigurationError)."""
-    config = strip_docs(config)
+    config = prepared(config)
     report = Report(levels=('semantics',))
     try:
         cfg = TransactiveNode.Config.validate_for('TransactiveNode', config)
@@ -258,27 +271,54 @@ def _isolated_build(base_dir: str | Path | None):
             setattr(Timer, name, value)
 
 
-def _build(config: dict) -> None:
+def _build(config: dict) -> CheckNode:
     node = CheckNode()
     node.configure_node(deepcopy(config))
+    return node
 
 
-def validate_construction(config: dict, base_dir: str | Path | None = None) -> Report:
+def _step(node: CheckNode, steps: int, report: Report) -> None:
+    """Run `steps` state-machine iterations with the clock set to the first market's transition times in turn (the
+    clock stays at the last one once they are used up), so the markets move through their states; the first iteration
+    that raises is reported as `step k` and stops the run."""
+    if not node.market_series:
+        report.problems.append(Problem('construction', 'step 1', 'the configuration has no market series to step'))
+        return
+    timings = node.market_series[0].newest_market.transition_times
+    instants = sorted({value for value in vars(timings).values() if hasattr(value, 'tzinfo')})
+    clock = {'t': instants[0]}
+    with patch.object(Timer, 'now', side_effect=lambda *args, **kwargs: clock['t']):
+        for k in range(1, steps + 1):
+            clock['t'] = instants[min(k - 1, len(instants) - 1)]
+            try:
+                node._state_machine_iteration()
+            except Exception as error:  # noqa: BLE001  the failure is the finding
+                report.problems.append(Problem('construction', f'step {k}',
+                                               f'at {clock["t"].isoformat()}: {type(error).__name__}: {error}'))
+                return
+
+
+def validate_construction(config: dict, base_dir: str | Path | None = None, steps: int = 0) -> Report:
     """
     Build a node from the configuration with a NullDataManager (nothing is archived). When the build fails, entries
     are added one at a time in TENT's construction order to find the one whose addition breaks it, and the failure is
     reported at that entry's path (or at the node when the node settings alone fail). Relative paths in the
     configuration (weather files) resolve against `base_dir`, by default the working directory, as they do for a node.
+    With `steps`, the built node then runs that many state-machine iterations along its first market's transition
+    times (see _step), so errors a component raises only when the markets run surface too.
     """
-    config = strip_docs(config)
+    config = prepared(config)
     report = Report(levels=('construction',))
     checked = {**config, 'data_manager': {'class_name': 'NullDataManager'}}
     with _isolated_build(base_dir):
         try:
-            _build(checked)
-            return report
+            node = _build(checked)
         except Exception as error:  # noqa: BLE001  the failure is the finding
             failure = error
+        else:
+            if steps > 0:
+                _step(node, steps, report)
+            return report
         partial = {**checked, **{name: [] for name in BUILD_ORDER}}
         try:
             _build(partial)
@@ -300,10 +340,11 @@ def validate_construction(config: dict, base_dir: str | Path | None = None) -> R
 
 # ----------------------------------------------------------------------------------------------------------- all
 
-def validate(config: dict, construct: bool = False, base_dir: str | Path | None = None) -> Report:
-    """Structure, then semantics, then (with `construct`) construction. Construction runs only when the first two
-    levels found no problem: a configuration the models reject cannot build, and the models say why better."""
-    report = validate_structure(config).extend(validate_semantics(config))
+def validate(config: dict, construct: bool = False, base_dir: str | Path | None = None, steps: int = 0) -> Report:
+    """Placeholders, structure, then semantics, then (with `construct`) construction and `steps` iterations.
+    Construction runs only when the earlier levels found no problem: a configuration the models reject cannot build,
+    and the models say why better; a placeholder is a path that does not exist."""
+    report = validate_placeholders(config).extend(validate_structure(config)).extend(validate_semantics(config))
     if construct and report.ok:
-        report.extend(validate_construction(config, base_dir))
+        report.extend(validate_construction(config, base_dir, steps))
     return report

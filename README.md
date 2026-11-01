@@ -87,10 +87,13 @@ Conventions the frames follow:
 builds from them (`tent.registry.configuration_schema`). The same logic drives the dashboard's Configuration mode.
 
     tent-config schema   [--out tent-node.schema.json]
-    tent-config validate FILE [--construct] [--base-dir DIR]
+    tent-config validate FILE [--construct] [--steps N] [--base-dir DIR]
     tent-config diff     OLD NEW
     tent-config template [SLOT CLASS] [--market-class-name CLASS] [--no-doc] [--out FILE] [--list-classes]
+    tent-config new      --template campus|city|small-office|small-office-ilc [--no-doc] [--out FILE]
+    tent-config add      FILE --list LIST --class CLASS [--market-class-name CLASS] [--name NAME] [--doc] [--out FILE]
     tent-config migrate  FILE [--out FILE]
+    tent-config docs     --out DIR [--format md|rst]
 
 - `schema` writes TENT's JSON Schema (draft 2020-12) of a whole node configuration, for editors and other tools.
 - `validate` checks a file at three levels and prints `[level] path: message` lines. Structure: the schema, entry by
@@ -99,10 +102,14 @@ builds from them (`tent.registry.configuration_schema`). The same logic drives t
   names, zones, aware datetimes, enumeration names. Construction (`--construct`): a node is built with a
   `NullDataManager`; when the build fails, entries are added one at a time to attribute the failure (a name reference
   that matches nothing, a weather file that does not exist) to the entry whose addition breaks it. Relative paths in
-  the file resolve against `--base-dir` (default: the working directory, as for a node). Construction runs only when
-  the first two levels pass. A class from a package that is not installed here (the VOLTTRON agent's data manager,
-  meter points and actuation managers) is reported as `[unchecked]`, not as a problem. Exit status 1 when there are
-  problems.
+  the file resolve against `--base-dir` (default: the working directory, as for a node). With `--steps N` the built
+  node then runs N state-machine iterations with the clock set to its first market's transition times in turn, so an
+  error a component raises only when the markets run is reported as `[construction] step k: ...`. Template
+  placeholders still in the file (strings starting `<FILL:`) are reported first, as `[placeholders]`. Construction
+  runs only when the earlier levels pass. A class from a package that is not installed here (the VOLTTRON agent's data
+  manager, meter points and actuation managers) is reported as `[unchecked]`, not as a problem. A neighbor's `sender`
+  is the agent's key, read and removed by the agent before TENT sees the file, and is stripped before checking in the
+  same way. Exit status 1 when there are problems.
 - `diff` compares two configurations structurally, components matched by list and name, and classifies every change
   as `[in place]` (a running node takes it through `reconfigure`) or `[rebuild]` by the reconfigurable markers of the
   models: node settings, the data manager, components added or removed, class changes, market timing, model-frame
@@ -115,6 +122,18 @@ builds from them (`tent.registry.configuration_schema`). The same logic drives t
   (type, bounds, unit, default, whether reconfigurable) under the key `_doc`. JSON has no comments, so `_doc` is the
   documentation form; `validate`, `diff` and `migrate` strip it (`strip_docs`) before checking, and TENT itself does
   not accept it, so strip it before handing a file to a node. `--list-classes` lists the registered classes per slot.
+- `new` writes a whole node configuration from a template: `campus` is TENT's sample configuration, `city`,
+  `small-office` (direct-ratio actuation) and `small-office-ilc` (actuation through the ILC agent) are the
+  configurations deployed in this repository's simulation containers, each with its deployment paths (the archive URL,
+  the weather file) replaced by `<FILL: ...>` placeholders that `validate` lists until they are filled, and with
+  `_doc` descriptions on the node and on every entry of a registered class.
+- `add` appends a template entry for a registered class to a list of an existing file (`--list neighbors --class
+  BulkSupplierDC --name BPA`; `--list data_manager` replaces the block), refuses a name the list already has, writes
+  the file (or `--out`), and reports what the models still need (the new entry's required fields), exit status 1.
+- `docs` writes the "Configuring a node" page generated from the schema: the node settings, then one section per
+  component list and per nested slot with one subsection per registered class and a table of its fields (type, unit,
+  default, bounds, description, whether a running node takes a change in place). Markdown by default, reStructuredText
+  with `--format rst`; TENT's documentation carries the reStructuredText page under `docs/source/configuration/`.
 - `migrate` rewrites the legacy spellings the models identify: the camelCase lists (`meterPoints`, `localAssets`,
   `markets`, `neighbours`, ...), `model_type` to `class_name`, `db_type` dropped from `db_params`, a
   `TemperatureForecastModel` location given as `""` made `null`. It then reports, in the models' words, what the file
@@ -133,5 +152,6 @@ The fixtures build archives by driving TENT objects (`tests/conftest.py`): two a
 a MatchingEngine series with one negotiation pass of orders, signals and meter readings; one archive configured in
 `America/Los_Angeles` without an order book; and one with historian tables. The loaders, metrics, figures, report, CLI
 and dashboard logic are exercised against real TENT output. The configuration tool is tested against TENT's sample
-configuration, the configurations deployed in `containers/tent/*/agent_configs`, a template per registered class, and
-a legacy-spelled file; the Configuration mode of the dashboard runs headless through Streamlit's AppTest.
+configuration, the configurations deployed in `containers/tent/*/agent_configs`, a template per registered class, the
+four node templates, a legacy-spelled file, and the stepped construction check; the Configuration mode of the dashboard
+runs headless through Streamlit's AppTest.

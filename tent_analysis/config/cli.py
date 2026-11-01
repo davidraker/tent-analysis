@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from tent_analysis.config import diff as D
+from tent_analysis.config import schema as S
 from tent_analysis.config import checks as V
 from tent_analysis.config import documents, templates
 from tent_analysis.config.schema import write_schema
@@ -16,7 +17,7 @@ def schema(args) -> int:
 
 def validate(args) -> int:
     config = documents.load(args.file)
-    report = V.validate(config, construct=args.construct, base_dir=args.base_dir)
+    report = V.validate(config, construct=args.construct or args.steps > 0, base_dir=args.base_dir, steps=args.steps)
     print(report.text())
     return 0 if report.ok else 1
 
@@ -53,6 +54,41 @@ def template(args) -> int:
     return 0
 
 
+def new(args) -> int:
+    config = templates.new(args.template, doc=not args.no_doc)
+    text = documents.dump(config, args.out)
+    if args.out:
+        print(f'wrote {args.out}; fill the placeholders validate lists')
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def add(args) -> int:
+    config = documents.load(args.file)
+    try:
+        updated = templates.add_entry(config, args.list, args.class_name, args.market_class_name, args.name, doc=args.doc)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    report = V.validate_structure(updated).extend(V.validate_semantics(updated))
+    out = args.out or args.file
+    documents.dump(updated, out)
+    print(f'wrote {out}')
+    if not report.ok:
+        print('the file now has problems to resolve (the new entry\'s required fields, usually):', file=sys.stderr)
+        print(report.text(), file=sys.stderr)
+        return 1
+    return 0
+
+
+def docs(args) -> int:
+    from tent_analysis.config.docs import write_docs
+    path = write_docs(args.out, args.format)
+    print(f'wrote {path}')
+    return 0
+
+
 def migrate(args) -> int:
     migrated, notes = documents.migrate(documents.load(args.file))
     for note in notes:
@@ -83,7 +119,28 @@ def main(argv=None) -> int:
     p.add_argument('--construct', action='store_true')
     p.add_argument('--base-dir', help='directory relative paths in the file resolve against for --construct '
                                       '(default: the working directory, as for a node)')
+    p.add_argument('--steps', type=int, default=0, help='after building, run this many state-machine iterations along '
+                                                        "the first market's transition times (implies --construct)")
     p.set_defaults(func=validate)
+    p = sub.add_parser('new', help='a whole node configuration from a template: the TENT sample campus, or the '
+                                   'deployed city and small offices, with deployment paths left as placeholders')
+    p.add_argument('--template', required=True, choices=templates.template_names())
+    p.add_argument('--no-doc', action='store_true', help=f'omit the {documents.DOC_KEY!r} descriptions')
+    p.add_argument('--out')
+    p.set_defaults(func=new)
+    p = sub.add_parser('add', help='append a template entry for a registered class to a list of an existing file')
+    p.add_argument('file')
+    p.add_argument('--list', required=True, choices=sorted(S.SLOTS), help='the node list (or data_manager, replaced)')
+    p.add_argument('--class', dest='class_name', required=True)
+    p.add_argument('--market-class-name', dest='market_class_name')
+    p.add_argument('--name', help='name of the new entry (default: the class name); must be new in the list')
+    p.add_argument('--doc', action='store_true', help=f'include the {documents.DOC_KEY!r} descriptions in the entry')
+    p.add_argument('--out', help='write here instead of back into FILE')
+    p.set_defaults(func=add)
+    p = sub.add_parser('docs', help='write the "Configuring a node" page generated from the schema')
+    p.add_argument('--out', required=True, help='directory to write into')
+    p.add_argument('--format', choices=['md', 'rst'], default='md')
+    p.set_defaults(func=docs)
     p = sub.add_parser('diff', help='compare two configurations; exit 0 when every change is reconfigurable in place, '
                                     '2 when the node must be rebuilt')
     p.add_argument('old')

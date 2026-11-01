@@ -82,3 +82,49 @@ def _migrate_dicts(value, path: str, notes: list[str]) -> None:
     elif isinstance(value, list):
         for index, item in enumerate(value):
             _migrate_dicts(item, f'{path}[{index}]', notes)
+
+
+PLACEHOLDER_PREFIX = '<FILL:'
+"""A value a template leaves for the user to fill (paths and URLs of the deployment): a string starting with this
+marker and describing what belongs there, e.g. "<FILL: path of the hourly temperature CSV>". validate reports every
+placeholder still present, so a template cannot be mistaken for a finished configuration."""
+
+
+def is_placeholder(value) -> bool:
+    return isinstance(value, str) and value.startswith(PLACEHOLDER_PREFIX)
+
+
+def placeholders(value, path: str = '') -> list[tuple[str, str]]:
+    """(path, placeholder text) of every placeholder in a configuration, at any depth."""
+    found = []
+    if is_placeholder(value):
+        found.append((path, value))
+    elif isinstance(value, dict):
+        for key, sub in value.items():
+            found.extend(placeholders(sub, f'{path}.{key}' if path else key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found.extend(placeholders(item, f'{path}[{index}]'))
+    return found
+
+
+HOST_KEYS: dict[str, tuple[str, ...]] = {'neighbors': ('sender',)}
+"""Keys of a component entry that the host application (the VOLTTRON TransactiveNodeAgent) reads and removes before the
+configuration reaches TENT, by node list: a neighbor's `sender` is the message-bus identity the agent accepts that
+neighbor's signals from. TENT's models do not know them, so validation strips them first; a configuration file as
+deployed keeps them."""
+
+
+def strip_host_keys(config: dict) -> dict:
+    """A copy of `config` without the host application's keys (HOST_KEYS)."""
+    result = dict(config)
+    for list_name, keys in HOST_KEYS.items():
+        entries = result.get(list_name)
+        if isinstance(entries, list):
+            result[list_name] = [{k: v for k, v in e.items() if k not in keys} if isinstance(e, dict) else e for e in entries]
+    return result
+
+
+def prepared(config: dict) -> dict:
+    """A configuration as TENT receives it: without documentation keys and without the host application's keys."""
+    return strip_host_keys(strip_docs(config))
