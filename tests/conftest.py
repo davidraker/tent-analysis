@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from unittest.mock import patch
 import sqlalchemy as sa
 
 from tent.containers.vertex import Vertex
@@ -53,8 +54,24 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
         configs['market_series'].append(engine)
     tn = MockTN()
     tn.configure_node(configs)
-    for _ in range(2):
-        tn.step()
+    # Record the first auction market's state changes at its own transition times (markets open at the next
+    # anchor-aligned clearing time, so real-time steps would leave it Inactive). Only the states are recorded; the
+    # prices and schedules come from the fixture below, not from running the market.
+    from tent.enumerations import MarketState as _State
+    first = tn.market_series[0].newest_market
+    times = first.transition_times
+    previous = None
+    for state, moment in ((_State.Inactive, times.active - timedelta(seconds=1)), (_State.Active, times.active),
+                          (_State.Negotiation, times.negotiation),
+                          (_State.MarketLead, times.market_lead), (_State.DeliveryLead, times.delivery_lead),
+                          (_State.Delivery, times.delivery)):
+        # States whose configured durations are zero share a transition time; the archive keys a state change by
+        # market and record time, so each recorded change is at least a second after the previous one.
+        if previous is not None and moment <= previous:
+            moment = previous + timedelta(seconds=1)
+        previous = moment
+        with patch.object(Timer, 'now', return_value=moment):
+            first.market_state = state
     if orders:
         # One negotiation pass of the engine: every entity's active-vertex curve is quoted into the book and each new
         # order is matched, leaving matched legs, superseded parents and standing remainders in the archive.
