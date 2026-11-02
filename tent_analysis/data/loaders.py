@@ -238,6 +238,9 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
         .reset_index(drop=True)
 
 
+# Most values bound into one IN (...) clause; SQLite accepts 999 in older builds and 32766 in newer ones.
+IN_CHUNK = 500
+
 ORDER_COLUMNS = ['source', 'actor', 'run_id', 'order_id', 'record_time', 'status', 'side', 'actor_name', 'buyer_name',
                  'seller_name', 'parent_order_id', 'time_stamp', 'expire_by', 'market_id', 'market_name', 'market_series',
                  'interval_id', 'interval_start', 'record', 'price', 'quantity', 'continuity']
@@ -272,9 +275,15 @@ def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
     if not history:
         newest = versions.groupby('order_id')['record_time'].transform('max')
         versions = versions[versions['record_time'] == newest]
-    vertices = pd.DataFrame(reader.execute(
-        select(vx.c.curve_id.label('order_id'), vx.c.curve_record_time.label('record_time'), vx.c.record, vx.c.price,
-               vx.c.quantity, vx.c.continuity).where(vx.c.curve_id.in_(list(versions['order_id'].unique())))))
+    # One query per chunk of order ids: an IN list of every order of a negotiated archive (one book per balancing pass,
+    # tens of thousands of orders) exceeds SQLite's bound-parameter limit.
+    order_ids = list(versions['order_id'].unique())
+    rows = []
+    for start in range(0, len(order_ids), IN_CHUNK):
+        rows.extend(reader.execute(
+            select(vx.c.curve_id.label('order_id'), vx.c.curve_record_time.label('record_time'), vx.c.record, vx.c.price,
+                   vx.c.quantity, vx.c.continuity).where(vx.c.curve_id.in_(order_ids[start:start + IN_CHUNK]))))
+    vertices = pd.DataFrame(rows)
     df = versions.merge(vertices, on=['order_id', 'record_time'], how='inner')
     if df.empty:
         return pd.DataFrame(columns=ORDER_COLUMNS)
