@@ -152,7 +152,7 @@ def main(argv=None) -> int:
                    help='TransactiveNode (whole file) or a slot: MeterPoint, InformationServiceModel, LocalAsset, '
                         'Neighbor, MarketSeries, DataManager, PriceModel, Model, ActuationManager, OccupancyManager')
     p.add_argument('class_name', nargs='?')
-    p.add_argument('--market-class-name', dest='market_class_name', help='for a MarketSeries: Auction, ConsensusMarket, '
+    p.add_argument('--market-class-name', dest='market_class_name', help='for a MarketSeries: Auction, ConsensusMarket, MatchingAuction, MatchingConsensusMarket, '
                                                                         'MatchingEngine or Market')
     p.add_argument('--no-doc', action='store_true', help=f'omit the {documents.DOC_KEY!r} descriptions')
     p.add_argument('--list-classes', action='store_true', help='list the registered classes per slot and exit')
