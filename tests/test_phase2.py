@@ -16,15 +16,16 @@ def test_signals_loader_and_pairs(source):
     sig = load_signals(source, history=True)
     assert set(sig['direction']) == {'sent', 'received'} and sig['neighbor_name'].nunique() == 1
     assert sig['market_series'].notna().all() and sig['signal_time'].notna().all()
+    auction = sig[sig['market_series'] != 'Consensus_Market']  # the consensus market's exchange is test_consensus's
     # Stored as archived: the received signal carries the remote side's sign, opposite to the sent one.
-    sent, received = (sig[sig['direction'] == d].sort_values('price') for d in ('sent', 'received'))
+    sent, received = (auction[auction['direction'] == d].sort_values('price') for d in ('sent', 'received'))
     assert list(sent['quantity'].unique()) == [-50.0, 30.0] and list(received['quantity'].unique()) == [45.0, -36.0]
-    pairs = signal_pairs(sig, thresholds={sig['neighbor_name'].iloc[0]: 2.0})
+    pairs = signal_pairs(auction, thresholds={sig['neighbor_name'].iloc[0]: 2.0})
     assert len(pairs) == 4 and (pairs['sent_vertices'] == 2).all()
     assert pairs['max_quantity_gap'].round(3).eq(6.0).all(), \
         'compared from the local side: |-50 - (-45)| = 5 and |30 - 36| = 6; without the flip the gap would be 95'
     assert pairs['exceeds_threshold'].all()
-    assert signal_pairs(sig, thresholds={sig['neighbor_name'].iloc[0]: 10.0})['exceeds_threshold'].eq(False).all()
+    assert signal_pairs(auction, thresholds={sig['neighbor_name'].iloc[0]: 10.0})['exceeds_threshold'].eq(False).all()
 
 
 def test_signal_comparison_draws_received_from_local_side(source):
@@ -55,7 +56,8 @@ def test_curve_helpers(source):
     assert len(latest) == 4 and latest['price'].is_monotonic_increasing
     assert curve_at(curves, owner, own_start, measurement_type='ActiveVertex').equals(latest)
     assert curve_at(curves, owner, own_start, measurement_type='SystemVertex').empty
-    earlier = curve_at(curves, owner, own_start, when=curves['record_time'].min())
+    first_version = curves[curves['owner_name'] == owner]['record_time'].min()
+    earlier = curve_at(curves, owner, own_start, when=first_version)
     assert len(earlier) == 2 and earlier['record_time'].nunique() == 1, 'as-of the first record: the first version only'
     with pytest.raises(ValueError, match='timezone-aware'):
         curve_at(curves, owner, own_start, when=curves['record_time'].min().tz_localize(None))

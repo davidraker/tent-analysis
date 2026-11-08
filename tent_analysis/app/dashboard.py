@@ -98,6 +98,13 @@ def main():
             figures = views.devices(pattern)
         else:
             figures = getattr(views, PAGES[page])()
+        if page == 'Negotiation':
+            summary = views.consensus_table()
+            if not summary.empty:
+                st.subheader('Consensus summary')
+                st.caption('Markets closed in consensus / without at the end of Negotiation, recorded passes, median time '
+                           'to full consensus, signals sent and received.')
+                st.dataframe(summary.drop(columns=['median_time_to_consensus']), hide_index=True, use_container_width=True)
     if not figures:
         st.warning('Nothing to show for this selection.')
         return

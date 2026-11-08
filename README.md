@@ -27,14 +27,21 @@ the host.
   of the writing TENT, from the `archive_schema` row of application `TENT`; version 1, without that row, is everything
   before 2 November 2026) and names any other application that writes into the database, then lists
   runs (with their configured time zone), components by type, measurement headers by owner type, and the order book's
-  size and latest statuses when the archive has one.
+  size and latest statuses when the archive has one. When the archive holds a consensus market's `FullConsensus`
+  flags it ends with a consensus block: per actor and series, the markets that closed in consensus / without at the
+  end of Negotiation, the mean recorded passes, the median time to full consensus, and the signals sent and received
+  (see Consensus runs below for the definitions).
 - `export` writes one tidy frame as CSV or Parquet. `--what` is one of `measurements` (latest version per interval),
   `history` (every version), `curves` (one row per vertex, every version, order book excluded), `signals` (sent and
-  received transactive signals, one row per vertex), `orders` (every version of every order, one row per vertex),
-  `state_changes`, `meter_readings`, `historian_topics` (decoded `topics`/`data` rows).
+  received transactive signals, one row per vertex, with the acknowledgement protocol's `sequence`, `in_reply_to` and
+  `revised`), `orders` (every version of every order, one row per vertex), `state_changes`, `meter_readings`,
+  `historian_topics` (decoded `topics`/`data` rows), `consensus` (one row per consensus market: how its negotiation
+  closed, `consensus_outcomes` below).
 - `report` builds every figure family the archive supports (overview, curves, negotiation, markets, orders, signals,
   bid position, costs, devices). Orders appear only for archives with a MatchingEngine order book that holds orders,
-  devices only for archives with historian tables. `html` writes one self-contained page; `png` and `pdf` write one
+  devices only for archives with historian tables; the negotiation family carries the consensus figures (outcome
+  timeline, time to consensus, recorded passes, signal traffic) only when the archive records `FullConsensus`.
+  `html` writes one self-contained page; `png` and `pdf` write one
   file per figure into the `--out` directory, numbered in report order. A figure family that fails is reported on
   stderr and skipped; the report is still written and the exit status is 1.
 - `dashboard` opens the Streamlit app on one or more archives. The URLs are handed to the Streamlit process through
@@ -66,7 +73,8 @@ Conventions the frames follow:
 - Quantities follow TENT's sign convention: generation and export positive, load and import negative. A received
   transactive signal is archived as the remote node stated it, so `load_signals` returns its quantities with the
   remote sign; `signal_pairs` and the signal comparison figure restate it from the local side (`from_local_side`)
-  before comparing it with the sent signal.
+  before comparing it with the sent signal. `load_signals` returns the signals that have archived curves;
+  `load_signal_headers` returns every signal as one row (direction, time, protocol header, market).
 - A curve is identified by its `curve_id`; `load_curves` carries `measurement_type` and, for signal vertices,
   `direction`. `curve_at` returns one owner's curve for one interval and raises when the owner has several distinct
   curves there (a neighbor's sent and received signals); `single_curve` keeps the newest version per curve id and lets
@@ -79,6 +87,55 @@ Conventions the frames follow:
   demand.
 - Historian topics are drawn one panel per point name (the topic's last path segment) with one line per device;
   topics whose values are not numeric are left out and counted in the figure title.
+
+### Consensus runs
+
+`tent_analysis.analysis.consensus_runs` reads how a ConsensusMarket (or MatchingConsensusMarket) negotiation went from
+three archive records: the `FullConsensus` flags the market writes per interval at the end of every negotiation pass,
+when Negotiation ends and after a late rebalance in MarketLead (load with `history=True`); the market state changes;
+and the transactive signals with their acknowledgement header.
+
+    from tent_analysis.analysis import consensus_outcomes, signal_traffic, link_agreement, consensus_summary, compare_runs
+    full = load_measurements(source, types=['FullConsensus'], history=True)
+    changes = load_state_changes(source)
+    outcomes = consensus_outcomes(full, changes)                  # one row per market
+    traffic = signal_traffic(load_signal_headers(source), changes)  # per market and neighbor
+    summary = consensus_summary(outcomes, traffic)                # per actor and series
+
+- `consensus_outcomes`: per market, the negotiation start and end (entering Negotiation and MarketLead), the recorded
+  passes, the intervals, how many were in consensus at the close and whether the market `closed_in_consensus`, the
+  late passes recorded in MarketLead and `final_consensus` at the latest record, the first time every interval was in
+  consensus (`consensus_time`, `time_to_consensus` from the negotiation start, `consensus_fraction` of the window).
+  "Closed in consensus" means every interval's flag was true at the record made when Negotiation ended: TENT writes
+  that record just after the MarketLead state change, so the close record is the latest pass no later than one second
+  (`PASS_GAP`) after it, and the latest record when no state changes are known. TENT archives a flag only when it
+  changes, so `passes` counts the passes that moved some interval's flag, not every balancing pass; the signals sent
+  per neighbor count the exchanges.
+- `signal_traffic`: per market and neighbor, signals sent and received, each split into revised signals and
+  acknowledgements (`revised` false: content unchanged, needs no reply; a null flag, from an archive before the
+  protocol, counts as revised), first and last signal time, and `after_deadline` (signal time after the market entered
+  MarketLead) when state changes are given. Count from `load_signal_headers`, one row per signal: TENT archives every
+  signal's header but a curve only when its content differs from the last one archived for that neighbor, market and
+  interval, so acknowledgements and repeated signals have no vertex rows and are missing from `load_signals`.
+- `link_agreement`: per market, neighbor and interval, the last sent and last received signal compared from the local
+  side. The archive numbers a curve's vertices in price order and does not mark the balance point a signal carried,
+  so with `prices` (a MarginalPrice frame, matched by market) the curves are read at the market's cleared price
+  (`sent_kw`, `received_kw`, `gap_kw`), and `max_curve_gap` is the largest quantity gap between them over the union of
+  their breakpoints. This is not TENT's convergence test, which compares balance points whose price allows for losses
+  and demand charges on the link: on a steep upstream curve the gap at the local price can be large while the market
+  recorded consensus. `thresholds` (`Catalog.convergence_thresholds`) gives `within_threshold`.
+- `consensus_summary`: per source, actor and series, the markets closed in consensus and without, `final_consensus`,
+  mean passes, median time to consensus (and in minutes), median fraction of the window, signals sent and received.
+
+Variants compare like any other metric frame: stack the summaries of two archives (a ConsensusMarket run as the
+baseline, a MatchingConsensusMarket run as the variant) and call `compare_runs(summary, baseline='consensus',
+value='closed_in_consensus', keys=['actor', 'market_series'])`, or `value='median_minutes_to_consensus'`,
+`'mean_passes'`, `'signals_sent'`. The figures (`viz.consensus_runs`): `consensus_outcome_timeline` (one bar per market
+along simulated time from negotiation start to end, status-coloured by how it closed, a diamond where full consensus
+was first reached; one row per actor and series), `time_to_consensus` (minutes, or `value='passes'`, per market with
+the sources side by side; a market that never reached consensus is marked at the top of its window) and
+`signal_traffic_panel` (sent and received per market, revised and acknowledgements stacked). The dashboard's
+Negotiation page shows the summary table and these figures when the archive records `FullConsensus`.
 
 ## Configuration tool
 
@@ -151,8 +208,10 @@ the session with their classification, and downloads the result.
 
     pytest tests -q
 
-The fixtures build archives by driving TENT objects (`tests/conftest.py`): two auction series, a consensus series,
-a MatchingEngine series with one negotiation pass of orders, signals and meter readings; one archive configured in
+The fixtures build archives by driving TENT objects (`tests/conftest.py`): two auction series, a consensus series
+whose market negotiates in two recorded passes (closing without consensus in one archive and in consensus in the
+other) and exchanges signals ending in an acknowledgement, a MatchingEngine series with one negotiation pass of orders,
+signals and meter readings; one archive configured in
 `America/Los_Angeles` without an order book; and one with historian tables. The loaders, metrics, figures, report, CLI
 and dashboard logic are exercised against real TENT output. The configuration tool is tested against TENT's sample
 configuration, the configurations deployed in `containers/tent/*/agent_configs`, a template per registered class, the

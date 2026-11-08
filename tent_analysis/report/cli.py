@@ -9,15 +9,23 @@ from pathlib import Path
 import pandas as pd
 
 from tent_analysis.data import (Source, load_measurements, load_curves, load_state_changes, load_meter_readings,
-                                load_historian_topics, load_orders, load_signals, redact_url)
+                                load_historian_topics, load_orders, load_signal_headers, load_signals, redact_url)
 from tent_analysis.report.html import build_report, standard_figures
 from tent_analysis.report.images import FORMATS, write_images
 from tent_analysis.viz import Theme
 
+from tent_analysis.analysis import consensus_outcomes, consensus_summary, signal_traffic
+
 EXPORTS = {'measurements': lambda s: load_measurements(s), 'history': lambda s: load_measurements(s, history=True),
            'curves': lambda s: load_curves(s, history=True), 'signals': lambda s: load_signals(s, history=True),
            'orders': lambda s: load_orders(s, history=True), 'state_changes': load_state_changes,
-           'meter_readings': load_meter_readings, 'historian_topics': load_historian_topics}
+           'meter_readings': load_meter_readings, 'historian_topics': load_historian_topics,
+           'consensus': lambda s: consensus_outcomes(load_measurements(s, types=['FullConsensus'], history=True),
+                                                     load_state_changes(s))}
+
+
+def _format_minutes(value) -> str:
+    return 'never' if pd.isna(value) else f'{value:.1f} min'
 
 
 def inspect(args) -> int:
@@ -59,6 +67,15 @@ def inspect(args) -> int:
         if not counts.empty:
             print('\nMeasurement headers by owner type:')
             print(counts.to_string())
+    if (cat.measurements['measurement_type'] == 'FullConsensus').any():
+        changes = load_state_changes(source)
+        outcomes = consensus_outcomes(load_measurements(source, types=['FullConsensus'], history=True), changes)
+        summary = consensus_summary(outcomes, signal_traffic(load_signal_headers(source), changes))
+        print('\nConsensus (markets closed in consensus / without, at the end of Negotiation):')
+        for _, r in summary.iterrows():
+            print(f'  {r.actor:<24} {r.market_series:<24} {r.closed_in_consensus:>3} / {r.closed_without:<3} '
+                  f'mean recorded passes {r.mean_passes:.1f}  median time to consensus '
+                  f'{_format_minutes(r.median_minutes_to_consensus)}  signals sent {r.signals_sent} received {r.signals_received}')
     return 0
 
 

@@ -90,6 +90,18 @@ class Catalog:
         return int(self.reader.execute(select(func.count(distinct(order.c.id)).label('n')))[0]['n'])
 
     @cached_property
+    def convergence_thresholds(self) -> dict[str, float]:
+        """Neighbor name -> its convergence threshold [kW], the tolerance within which a neighbor's signal counts as
+        agreeing with this node's (Neighbor.convergence_threshold), for signal_pairs and link_agreement."""
+        if not self.reader.has_table('neighbor'):
+            return {}
+        neighbor, component = self.reader.tables['neighbor'], self.reader.tables['component']
+        rows = self.reader.execute(select(component.c.name, neighbor.c.convergence_threshold)
+                                   .join(component, component.c.id == neighbor.c.id))
+        return {str(r['name']): float(r['convergence_threshold']) for r in rows
+                if r['convergence_threshold'] is not None and not pd.isna(r['convergence_threshold'])}
+
+    @cached_property
     def run_labels(self) -> dict:
         """run_id -> actor label, for mapping a run_id column in one pass."""
         return {run_id: str(actor) for run_id, actor in zip(self.runs['run_id'], self.runs['actor'])}

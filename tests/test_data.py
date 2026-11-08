@@ -60,7 +60,12 @@ def test_load_curves(source):
     assert sorted(versions[versions.index.get_level_values(0) == one['curve_id'].iloc[0]]) == [2, 4]
     # Signal vertices carry their direction; every other curve has none.
     signals = latest[latest['measurement_type'] == 'SignalVertex']
-    assert set(signals['direction']) == {'sent', 'received'} and signals.groupby('direction')['curve_id'].nunique().eq(4).all()
+    assert set(signals['direction']) == {'sent', 'received'}
+    # Four intervals each way for the auction market and four more for the consensus market, whose acknowledgement
+    # repeated the sent curves and so has no curves of its own archived (see load_signal_headers).
+    assert signals.groupby(['market_series', 'direction'])['curve_id'].nunique().to_dict() == {
+        ('Consensus_Market', 'received'): 4, ('Consensus_Market', 'sent'): 4, ('Day-Ahead_Auction', 'received'): 4,
+        ('Day-Ahead_Auction', 'sent'): 4}
     assert latest.loc[latest['measurement_type'] != 'SignalVertex', 'direction'].isna().all()
 
 

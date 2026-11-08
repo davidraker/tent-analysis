@@ -74,7 +74,7 @@ def test_export_every_kind_and_parquet(source, tmp_path):
     from tent_analysis.report.cli import EXPORTS
     from tent_analysis.data import load_curves, load_signals
     assert set(EXPORTS) == {'measurements', 'history', 'curves', 'signals', 'orders', 'state_changes', 'meter_readings',
-                            'historian_topics'}
+                            'historian_topics', 'consensus'}
     for what in EXPORTS:
         assert main(['export', source.url, '--what', what, '--out', str(tmp_path / f'{what}.csv')]) == 0
     assert len(pd.read_csv(tmp_path / 'signals.csv')) == len(load_signals(source, history=True))

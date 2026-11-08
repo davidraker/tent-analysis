@@ -193,28 +193,77 @@ def _decode_historian_value(text):
             return text
 
 
-SIGNAL_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal_time', 'neighbor_id', 'neighbor_name',
-                  'market_id', 'market_name', 'market_series', 'curve_id', 'record_time', 'interval_id',
-                  'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty']
+SIGNAL_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal_time', 'sequence', 'in_reply_to',
+                  'revised', 'neighbor_id', 'neighbor_name', 'market_id', 'market_name', 'market_series', 'curve_id',
+                  'record_time', 'interval_id', 'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity',
+                  'uncertainty']
+PROTOCOL_COLUMNS = ('sequence', 'in_reply_to', 'revised')  # acknowledgement protocol header, archive schema 2 onwards
 
 
-def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool = False) -> pd.DataFrame:
-    """Transactive signals (sent and received) as one row per vertex, with neighbor, market, direction, signal time.
-    Quantities are as archived: a received signal states the exchange from the remote side, so its sign is opposite to
-    the local convention (analysis.curves.from_local_side restates it)."""
+SIGNAL_HEADER_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal_time', 'sequence', 'in_reply_to',
+                         'revised', 'neighbor_id', 'neighbor_name', 'market_id', 'market_name', 'market_series',
+                         'delivery_start']
+
+
+def _signal_headers(source: Source, neighbors: Sequence[str] = None) -> pd.DataFrame:
+    """One row per transactive_signal row, with the neighbor, the protocol header, and the market's first interval."""
     reader = source.reader
-    if not source.reader.has_table('transactive_signal'):
-        return pd.DataFrame(columns=SIGNAL_COLUMNS)
     sig, meas, comp = reader.tables['transactive_signal'], reader.tables['measurement'], reader.tables['component']
-    statement = (select(sig.c.id.label('signal_id'), sig.c.direction, sig.c.signal_time, sig.c.market_id,
+    protocol = [sig.c[name] for name in PROTOCOL_COLUMNS if name in sig.c]
+    statement = (select(sig.c.id.label('signal_id'), sig.c.direction, sig.c.signal_time, sig.c.market_id, *protocol,
                         meas.c.source_id.label('neighbor_id'), comp.c.name.label('neighbor_name'), comp.c.tn_id)
                  .join(meas, meas.c.id == sig.c.id).join(comp, comp.c.id == meas.c.source_id, isouter=True))
     if neighbors:
         statement = statement.where(comp.c.name.in_(list(neighbors)))
     headers = pd.DataFrame(reader.execute(statement))
     if headers.empty:
-        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+        return headers
     headers['direction'] = headers['direction'].map(_enum_name)  # SignalDirection member -> 'sent' / 'received'
+    for name in PROTOCOL_COLUMNS:
+        if name not in headers:
+            headers[name] = None
+    catalog = source.catalog
+    markets = catalog.markets[['id', 'name', 'series_name']].rename(
+        columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series'})
+    starts = catalog.intervals.groupby('market_id')['start_time'].min().rename('delivery_start').reset_index()
+    headers = headers.merge(markets, on='market_id', how='left').merge(starts, on='market_id', how='left') \
+        .rename(columns={'tn_id': 'run_id'})
+    headers['source'] = source.label
+    headers['actor'] = headers['run_id'].map(catalog.run_labels)
+    return headers
+
+
+def load_signal_headers(source: Source, neighbors: Sequence[str] = None) -> pd.DataFrame:
+    """Every transactive signal as one row, without its curves: direction, signal time, the acknowledgement protocol's
+    header (see load_signals) and the market's first interval (`delivery_start`). TENT archives every signal's header
+    but writes a curve only when its content differs from the last one archived for the same neighbor, market and
+    interval, so an acknowledgement, or a received signal repeating the previous one, has a header and no vertex rows
+    and appears here but not in load_signals; signal_traffic counts from this frame."""
+    if not source.reader.has_table('transactive_signal'):
+        return pd.DataFrame(columns=SIGNAL_HEADER_COLUMNS)
+    headers = _signal_headers(source, neighbors)
+    if headers.empty:
+        return pd.DataFrame(columns=SIGNAL_HEADER_COLUMNS)
+    headers = _in_zone(headers, source, ['signal_time', 'delivery_start'])
+    return headers[SIGNAL_HEADER_COLUMNS].sort_values(['market_series', 'delivery_start', 'neighbor_name', 'signal_time']) \
+        .reset_index(drop=True)
+
+
+def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool = False) -> pd.DataFrame:
+    """Transactive signals (sent and received) as one row per vertex, with neighbor, market, direction, signal time and
+    the acknowledgement protocol's header: `sequence` numbers the signals sent to one neighbor for one market,
+    `in_reply_to` is the sequence of the last signal received from that neighbor, and `revised` False marks a signal
+    whose content is unchanged from the sender's previous one (an acknowledgement; null in archives written before the
+    protocol, which means revised). Only signals with archived curves appear (see load_signal_headers). Quantities are
+    as archived: a received signal states the exchange from the remote side, so its sign is opposite to the local
+    convention (analysis.curves.from_local_side restates it)."""
+    reader = source.reader
+    if not source.reader.has_table('transactive_signal'):
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    headers = _signal_headers(source, neighbors)
+    if headers.empty:
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
+    headers = headers.drop(columns=['market_name', 'market_series', 'delivery_start', 'source', 'actor'])
     curves = reader.curves(measurement_ids=list(headers['signal_id']), latest_only=not history)
     records = []
     for curve in curves:
@@ -230,7 +279,7 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
     catalog = source.catalog
     markets = catalog.markets[['id', 'name', 'series_name']].rename(
         columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series'})
-    df = df.merge(markets, on='market_id', how='left').rename(columns={'tn_id': 'run_id'})
+    df = df.merge(markets, on='market_id', how='left')
     df['source'] = source.label
     df['actor'] = df['run_id'].map(catalog.run_labels)
     df = _in_zone(df, source, ['signal_time', 'interval_start', 'record_time'])

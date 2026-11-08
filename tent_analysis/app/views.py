@@ -8,16 +8,17 @@ from datetime import datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 
-from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus, convergence,
-                                    energy_cost, horizon_matrix, matched_quantities, net_curve, net_power, order_book,
-                                    order_counts, price_revisions, scheduled_power, signal_pairs, single_curve,
-                                    state_segments)
+from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus,
+                                    consensus_outcomes, consensus_summary, convergence, energy_cost, horizon_matrix,
+                                    matched_quantities, net_curve, net_power, order_book, order_counts, price_revisions,
+                                    scheduled_power, signal_pairs, signal_traffic, single_curve, state_segments)
 from tent_analysis.data import (Source, default_label, load_curves, load_historian_topics, load_measurements,
-                                load_meter_readings, load_orders, load_signals, load_state_changes)
-from tent_analysis.viz import (Theme, bid_position_figure, cleared_price_for, color_map, consensus_strip,
-                               convergence_panel, cost_bars, curve_figure, curve_multiples, device_panel,
-                               horizon_heatmap, market_timeline, matched_quantity_figure, negotiation_trace,
-                               order_status_bars, power_timeline, price_timeline, run_comparison, signal_comparison)
+                                load_meter_readings, load_orders, load_signal_headers, load_signals, load_state_changes)
+from tent_analysis.viz import (Theme, bid_position_figure, cleared_price_for, color_map, consensus_outcome_timeline,
+                               consensus_strip, convergence_panel, cost_bars, curve_figure, curve_multiples,
+                               device_panel, horizon_heatmap, market_timeline, matched_quantity_figure,
+                               negotiation_trace, order_status_bars, power_timeline, price_timeline, run_comparison,
+                               signal_comparison, signal_traffic_panel, time_to_consensus)
 
 
 @dataclass
@@ -154,31 +155,60 @@ class Views:
 
     def negotiation(self) -> dict[str, go.Figure]:
         history = self.measurements(['MarginalPrice', 'ScheduledPower', 'ConvergenceFlag'], history=True)
-        if history.empty:
-            return {}
-        starts = sorted(history['interval_start'].unique())
-        start = self.sel.interval_start if self.sel.interval_start in set(starts) else starts[0]
         changes = load_state_changes(self.source)
-        market_rows = history[(history['interval_start'] == start) & history['market_id'].notna()]
-        market_name = None
-        if not market_rows.empty:
-            mk = self.source.catalog.markets
-            hit = mk[mk['id'] == market_rows['market_id'].iloc[0]]
-            market_name = str(hit['name'].iloc[0]) if not hit.empty else None
-        figures = {'Price negotiation': negotiation_trace(history, 'MarginalPrice', start, changes, market_name,
-                                                          colors=self.colors, theme=self.theme, unit='$/kWh'),
-                   'Power negotiation': negotiation_trace(history, 'ScheduledPower', start, changes, market_name,
-                                                          colors=self.colors, theme=self.theme, unit='kW')}
-        matrix = horizon_matrix(history, 'MarginalPrice')
-        if not matrix.empty and matrix.shape[1] > 1:
-            figures['Price horizon'] = horizon_heatmap(matrix, theme=self.theme, title='Price known over time', unit='$/kWh')
-        conv = convergence(history)
-        if not conv.empty:
-            figures['Convergence'] = convergence_panel(conv, colors=self.colors, theme=self.theme)
-        cons = consensus(self.measurements(['FullConsensus']))
-        if not cons.empty:
-            figures['Full consensus'] = consensus_strip(cons, theme=self.theme)
+        figures = {}
+        if not history.empty:
+            starts = sorted(history['interval_start'].unique())
+            start = self.sel.interval_start if self.sel.interval_start in set(starts) else starts[0]
+            market_rows = history[(history['interval_start'] == start) & history['market_id'].notna()]
+            market_name = None
+            if not market_rows.empty:
+                mk = self.source.catalog.markets
+                hit = mk[mk['id'] == market_rows['market_id'].iloc[0]]
+                market_name = str(hit['name'].iloc[0]) if not hit.empty else None
+            figures['Price negotiation'] = negotiation_trace(history, 'MarginalPrice', start, changes, market_name,
+                                                             colors=self.colors, theme=self.theme, unit='$/kWh')
+            figures['Power negotiation'] = negotiation_trace(history, 'ScheduledPower', start, changes, market_name,
+                                                             colors=self.colors, theme=self.theme, unit='kW')
+            matrix = horizon_matrix(history, 'MarginalPrice')
+            if not matrix.empty and matrix.shape[1] > 1:
+                figures['Price horizon'] = horizon_heatmap(matrix, theme=self.theme, title='Price known over time', unit='$/kWh')
+            conv = convergence(history)
+            if not conv.empty:
+                figures['Convergence'] = convergence_panel(conv, colors=self.colors, theme=self.theme)
+        full = self.measurements(['FullConsensus'], history=True)
+        if full.empty:
+            return figures
+        cons = consensus(full)
+        figures['Full consensus'] = consensus_strip(cons, theme=self.theme)
+        # The consensus run: how each negotiation closed, what it took, and the signals exchanged (consensus markets).
+        outcomes = consensus_outcomes(full, changes)
+        figures['Consensus outcomes'] = consensus_outcome_timeline(outcomes, theme=self.theme)
+        figures['Time to consensus'] = time_to_consensus(outcomes, theme=self.theme)
+        figures['Consensus passes'] = time_to_consensus(outcomes, value='passes', theme=self.theme)
+        traffic = self.consensus_traffic(changes)
+        if not traffic.empty:
+            figures['Signal traffic'] = signal_traffic_panel(traffic, theme=self.theme)
         return figures
+
+    def consensus_traffic(self, changes: pd.DataFrame | None = None) -> pd.DataFrame:
+        """Signal traffic of the selected consensus markets: the signal headers of the markets that recorded
+        FullConsensus, within the series and delivery-date selection."""
+        full = self.measurements(['FullConsensus'])
+        if full.empty:
+            return signal_traffic(pd.DataFrame())
+        headers = load_signal_headers(self.source)
+        headers = headers[headers['market_id'].isin(set(full['market_id']))]
+        return signal_traffic(headers, load_state_changes(self.source) if changes is None else changes)
+
+    def consensus_table(self) -> pd.DataFrame:
+        """The consensus summary (consensus_summary) of the selection: one row per actor and series, for the
+        dashboard's Negotiation page. Empty when the archive records no FullConsensus."""
+        full = self.measurements(['FullConsensus'], history=True)
+        if full.empty:
+            return consensus_summary(pd.DataFrame())
+        changes = load_state_changes(self.source)
+        return consensus_summary(consensus_outcomes(full, changes), self.consensus_traffic(changes))
 
     def markets(self) -> dict[str, go.Figure]:
         changes = load_state_changes(self.source)

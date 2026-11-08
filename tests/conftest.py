@@ -29,7 +29,9 @@ def _mock_tn_class():
 
 
 def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1, tz: str = 'UTC',
-                  orders: bool = True) -> dict:
+                  orders: bool = True, consensus_closes: bool = False) -> dict:
+    """`consensus_closes`: the consensus market's second pass brings every interval into full consensus before its
+    negotiation ends; otherwise one interval stays out, so the market closes without consensus."""
     MockTN = _mock_tn_class()
     rng = random.Random(seed)
     Timer.simulation = False
@@ -81,14 +83,15 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
         for order in [o for o in engine_market.orderList if o.status in (OrderStatus.NEW, OrderStatus.NEW_REVISED)]:
             engine_market.match(order)
     # Full consensus is recorded only by a ConsensusMarket, so the archive gets one consensus series alongside the
-    # auctions, with the same timing as the first auction series. It is never stepped; the fixture writes its data.
+    # auctions, with the first auction series' intervals and a ten-minute negotiation (the sample auctions negotiate for
+    # zero seconds). It is never stepped; the fixture writes its data.
     from tent.enumerations import MarketState
     from tent.market.consensus_market import ConsensusMarket
     from tent.market.market_series import MarketSeries
     auction = tn.market_series[0]
     tn.market_series.append(MarketSeries(transactive_node=tn, name='Consensus_Market', market_class=ConsensusMarket,
-                                         initial_market_state=MarketState.Negotiation,
-                                         duration_negotiation=auction.duration.negotiation.total_seconds(),
+                                         initial_market_state=MarketState.Negotiation, duration_negotiation=600,
+                                         duration_market_lead=300,
                                          duration_delivery_lead=auction.duration.delivery_lead.total_seconds(),
                                          interval_duration=auction.duration.market_interval.total_seconds(),
                                          intervals_to_clear=auction.intervals_to_clear))
@@ -117,11 +120,29 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
                                            Vertex(price=0.10, quantity=90.0)])
     transactive = [n for n in tn.neighbors if n.transactive]
     consensus_market = tn.market_series[-1].newest_market
+    # The consensus market's negotiation, as TENT records it: the state changes at the market's own transition times,
+    # and record_consensus at the end of each pass (a flag is written only when it changes). Pass 1, three seconds into
+    # Negotiation, has nothing agreed; pass 2, four minutes in, has every interval agreed but (unless consensus_closes)
+    # the second; the record at the Negotiation -> MarketLead transition, which TENT writes just after the state change,
+    # changes nothing and leaves no row, as in a real archive.
+    negotiation, lead = consensus_market.transition_times.negotiation, consensus_market.transition_times.market_lead
+    with patch.object(Timer, 'now', return_value=negotiation):
+        consensus_market.market_state = MarketState.Negotiation
     for ti in consensus_market.time_intervals:
         for n in transactive:
-            n.convergence_flags.update(ti, ti is not consensus_market.time_intervals[1])
+            n.convergence_flags.update(ti, False)
     consensus_market.converged = True
-    consensus_market.record_consensus()
+    with patch.object(Timer, 'now', return_value=negotiation + timedelta(seconds=3)):
+        consensus_market.record_consensus()
+    for ti in consensus_market.time_intervals:
+        for n in transactive:
+            n.convergence_flags.update(ti, consensus_closes or ti is not consensus_market.time_intervals[1])
+    with patch.object(Timer, 'now', return_value=negotiation + timedelta(minutes=4)):
+        consensus_market.record_consensus()
+    with patch.object(Timer, 'now', return_value=lead):
+        consensus_market.market_state = MarketState.MarketLead
+    with patch.object(Timer, 'now', return_value=lead + timedelta(milliseconds=5)):
+        consensus_market.record_consensus()
     if transactive:
         from tent.containers.transactive_signal import TransactiveSignal
         from tent.enumerations import SignalDirection
@@ -136,6 +157,24 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
             received.update(ti, [Vertex(price=0.03, quantity=45.0), Vertex(price=0.09, quantity=-36.0)], archive=False)
         sent.archive()
         received.archive()
+        # The consensus market's exchange with the same neighbor, with the acknowledgement protocol's header fields:
+        # a revised signal each way (sequence 1), then this node's acknowledgement (sequence 2, in reply to the
+        # neighbor's 1, revised False) sent after the negotiation deadline, from MarketLead. Intervals 4 to 7, so the
+        # auction market's signals above stay the only ones for the first four intervals. TENT archives the
+        # acknowledgement's header but not its curves, whose content it already holds for the same lineage and interval.
+        exchange = [(SignalDirection.sent, negotiation + timedelta(seconds=5), dict(sequence=1, in_reply_to=None, revised=True),
+                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)]),
+                    (SignalDirection.received, negotiation + timedelta(seconds=40), dict(sequence=1, in_reply_to=1, revised=True),
+                     [Vertex(price=0.03, quantity=48.0), Vertex(price=0.09, quantity=-30.0)]),
+                    (SignalDirection.sent, lead + timedelta(seconds=20), dict(sequence=2, in_reply_to=1, revised=False),
+                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)])]
+        for direction, moment, header, vertices in exchange:
+            signal = TransactiveSignal(market=consensus_market, neighbor=neighbor, direction=direction, signal_time=moment,
+                                       **header)
+            for ti in consensus_market.time_intervals[4:8]:
+                signal.update(ti, [Vertex(price=v.price, quantity=v.quantity) for v in vertices], archive=False)
+            with patch.object(Timer, 'now', return_value=moment):
+                signal.archive()
     if tn.meter_points:
         meter = tn.meter_points[0]
         t0 = Timer.now()
@@ -154,7 +193,7 @@ def archive_url(tmp_path_factory):
 @pytest.fixture(scope='session')
 def variant_url(tmp_path_factory):
     url = f'sqlite:///{tmp_path_factory.mktemp("archive") / "campus_b.sqlite"}'
-    build_archive(url, actor='campus-B', price_scale=1.2, seed=2)
+    build_archive(url, actor='campus-B', price_scale=1.2, seed=2, consensus_closes=True)
     return url
 
 
