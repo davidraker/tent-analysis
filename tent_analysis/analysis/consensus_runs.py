@@ -11,9 +11,16 @@ What the archive records, and what this module can therefore say:
   interval's flag, not every balancing pass; the signals sent per neighbor (signal_traffic) count the exchanges.
 - The records of one pass share a record_time to within milliseconds, and passes are seconds apart (a state-machine
   iteration), so records closer than PASS_GAP belong to one pass.
-- The archive does not mark a signal's balance point (vertices are numbered in price order), so link_agreement reads
-  each curve at the market's cleared price when prices are given, and otherwise compares the curves as functions.
+- From archive schema version 6 on (TENT, 8 November 2026) a signal curve's row says which vertex is its balance point,
+  the exchange the signal proposes (sd_curve.balance_point_record; load_signals exposes it as the `balance_point`
+  flag), so link_agreement can test a link as TENT's Neighbor.check_for_convergence does: the last sent balance point
+  against the last received one restated from the local side, as a relative distance against the neighbor's
+  convergence threshold. Older archives numbered the vertices in price order and recorded nothing else, so there
+  link_agreement falls back to reading each curve at the market's cleared price when prices are given, and otherwise to
+  comparing the curves as functions; the `rule` column says which applied to each row.
 """
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -29,8 +36,11 @@ TRAFFIC_COLUMNS = KEY + MARKET + ['neighbor_name', 'delivery_start', 'sent', 're
                                   'sent_acknowledgements', 'received_revised', 'received_acknowledgements',
                                   'first_signal_time', 'last_signal_time', 'after_deadline']
 AGREEMENT_COLUMNS = KEY + MARKET + ['neighbor_name', 'interval_start', 'sent_time', 'received_time', 'sent_sequence',
-                                    'received_sequence', 'price', 'sent_kw', 'received_kw', 'gap_kw', 'max_curve_gap',
-                                    'threshold', 'within_threshold']
+                                    'received_sequence', 'rule', 'sent_balance_kw', 'received_balance_kw',
+                                    'balance_gap_kw', 'balance_distance', 'price', 'sent_kw', 'received_kw', 'gap_kw',
+                                    'max_curve_gap', 'threshold', 'within_threshold']
+RULES = ('balance_point', 'cleared_price', 'curve_gap')  # what link_agreement tested against the threshold, see there
+QUANTITY_ONLY_MARKET_TYPES = ('matching_consensus',)  # market types whose neighbors agree on the quantity alone
 SUMMARY_COLUMNS = ['source', 'actor', 'market_series', 'markets', 'closed_in_consensus', 'closed_without', 'final_consensus',
                    'mean_passes', 'median_time_to_consensus', 'median_minutes_to_consensus', 'median_consensus_fraction',
                    'signals_sent', 'signals_received']
@@ -197,18 +207,66 @@ def _price_lookup(prices: pd.DataFrame | None) -> tuple[list[str], pd.DataFrame 
     return keys, newest[keys + [value]].rename(columns={value: 'price'})
 
 
-def link_agreement(signals: pd.DataFrame, thresholds: dict | None = None, prices: pd.DataFrame | None = None) -> pd.DataFrame:
+def _balance_point(curve: pd.DataFrame | None) -> pd.Series | None:
+    """The vertex row a signal curve marks as its balance point, or None when the curve has no marked one (an archive
+    before schema version 6, a signal with nothing scheduled, no curve). A lone vertex is its own balance point, as it
+    is to TransactiveSignal.balance_points_differ."""
+    if curve is None or curve.empty:
+        return None
+    if len(curve) == 1:
+        return curve.iloc[0]
+    if 'balance_point' not in curve:
+        return None
+    marked = curve[curve['balance_point'].fillna(False).astype(bool)]
+    return marked.iloc[0] if len(marked) == 1 else None
+
+
+def balance_point_distance(sent: pd.Series, received: pd.Series, flexible: bool, quantity_only: bool = False) -> float:
+    """
+    TENT's relative distance between two balance points (TransactiveSignal._relative_distance), the received one already
+    restated from the local side: the quantity difference relative to the average quantity (absolute, against a 1 kW
+    scale, when the average is zero) and, when both curves express flexibility (`flexible`: more than one vertex each)
+    at finite, non-zero prices and the market does not agree on the quantity alone (`quantity_only`, a
+    MatchingConsensusMarket), the price difference relative to the average price, combined as a Euclidean distance. This
+    is the number Neighbor.check_for_convergence compares with the neighbor's convergence threshold.
+    """
+    q1, q2 = float(sent['quantity']), float(received['quantity'])
+    average = 0.5 * abs(q1 + q2)
+    quantity_term = abs(q2 - q1) if average == 0 else abs(q2 - q1) / average
+    price_term = 0.0
+    if flexible and not quantity_only:
+        p1, p2 = float(sent['price']), float(received['price'])
+        average_price = 0.5 * abs(p1 + p2)
+        if math.isfinite(p1) and math.isfinite(p2) and average_price != 0:
+            price_term = abs(p2 - p1) / average_price
+    return math.sqrt(quantity_term ** 2 + price_term ** 2)
+
+
+def link_agreement(signals: pd.DataFrame, thresholds: dict | None = None, prices: pd.DataFrame | None = None,
+                   market_types: dict | None = None) -> pd.DataFrame:
     """
     Where did each link end up, interval by interval? Per source/actor/run/market/neighbor/interval, the last sent and
     the last received signal (by signal time) and their curves compared from the local side (received quantities
-    negated, see from_local_side): with `prices` (a MarginalPrice measurements frame, matched by market, or
-    cleared_prices output, matched by series), `sent_kw` and `received_kw` are each curve's quantity at the market's
-    cleared price and `gap_kw` their difference, the exchange the two sides would make at that price; `max_curve_gap`
-    is the largest quantity gap between the curves over the union of their price breakpoints (as signal_pairs). The
-    archive does not mark the balance point a signal carried, so the gap at the cleared price stands in for it.
-    `thresholds` maps neighbor name to its convergence threshold [kW] (Catalog.convergence_thresholds);
-    `within_threshold` tests gap_kw when a price is known, else max_curve_gap, and is null without a threshold or a
-    pair of curves.
+    negated, see from_local_side). Three rules, named in `rule`, decide `within_threshold`; the first that applies:
+
+    - 'balance_point', TENT's convergence test, when both signals mark their balance point for the interval (the
+      `balance_point` flag of load_signals, archive schema version 6 on; a lone vertex is its own): `sent_balance_kw`
+      is the exchange this node proposed, `received_balance_kw` the one the neighbor proposed, restated from the local
+      side, `balance_gap_kw` their difference and `balance_distance` TENT's relative distance between the two points
+      (balance_point_distance: quantity, and price when both curves have flexibility and the market does not agree on
+      the quantity alone), which is what Neighbor.check_for_convergence compares with the neighbor's convergence
+      threshold (a dimensionless fraction, Catalog.convergence_thresholds). `market_types` maps market_id to the
+      market's type (Catalog.markets 'market_type'); a type in QUANTITY_ONLY_MARKET_TYPES leaves the price term out.
+    - 'cleared_price', when a balance point is missing but `prices` are given (a MarginalPrice measurements frame,
+      matched by market, or cleared_prices output, matched by series): `sent_kw` and `received_kw` are each curve's
+      quantity at the market's cleared price and `gap_kw` their difference, the exchange the two sides would make at
+      that price; `within_threshold` is |gap_kw| <= threshold. On a lossy or demand-charged link the balance-point price
+      differs from the local one, so this gap can be large while TENT recorded consensus; it is a stand-in.
+    - 'curve_gap' otherwise: `max_curve_gap`, the largest quantity gap between the curves over the union of their price
+      breakpoints (as signal_pairs), tested against the threshold.
+
+    The cleared-price columns and max_curve_gap are filled whatever the rule, when they can be. `within_threshold` is
+    null without a threshold or without a pair of curves.
     """
     if signals.empty:
         return pd.DataFrame(columns=AGREEMENT_COLUMNS)
@@ -228,16 +286,18 @@ def link_agreement(signals: pd.DataFrame, thresholds: dict | None = None, prices
     for _, g in groups.iterrows():
         key = tuple(g[k] for k in keys)
         row = dict(zip(keys, key)) | {'price': g['price']}
-        curves = {}
+        curves, points = {}, {}
         for direction, table in by_key.items():
             curve = table.get(key)
             if curve is not None:
                 curve = curve.sort_values(['price', 'quantity'])
             curves[direction] = curve
+            points[direction] = _balance_point(curve)
             row[f'{direction}_time'] = curve['signal_time'].iloc[0] if curve is not None else pd.NaT
             row[f'{direction}_sequence'] = curve['sequence'].iloc[0] if curve is not None and 'sequence' in curve else None
             row[f'{direction}_kw'] = (quantity_at_price(curve, float(g['price']))
                                       if curve is not None and pd.notna(g['price']) else np.nan)
+            row[f'{direction}_balance_kw'] = np.nan if points[direction] is None else float(points[direction]['quantity'])
         s, r = curves['sent'], curves['received']
         gap = np.nan
         if s is not None and r is not None:
@@ -245,10 +305,21 @@ def link_agreement(signals: pd.DataFrame, thresholds: dict | None = None, prices
             gap = max(abs(quantity_at_price(s, p) - quantity_at_price(r, p)) for p in breakpoints)
         row['max_curve_gap'] = gap
         row['gap_kw'] = row['sent_kw'] - row['received_kw'] if pd.notna(row['sent_kw']) and pd.notna(row['received_kw']) else np.nan
+        row['balance_gap_kw'] = row['balance_distance'] = np.nan
+        if points['sent'] is not None and points['received'] is not None:
+            row['balance_gap_kw'] = row['sent_balance_kw'] - row['received_balance_kw']
+            quantity_only = (market_types or {}).get(g['market_id']) in QUANTITY_ONLY_MARKET_TYPES
+            row['balance_distance'] = balance_point_distance(points['sent'], points['received'],
+                                                             flexible=len(s) > 1 and len(r) > 1, quantity_only=quantity_only)
+            rule, tested = 'balance_point', row['balance_distance']
+        elif pd.notna(row['gap_kw']):
+            rule, tested = 'cleared_price', abs(row['gap_kw'])
+        else:
+            rule, tested = 'curve_gap', gap
+        row['rule'] = rule
         threshold = (thresholds or {}).get(g['neighbor_name'])
-        tested = row['gap_kw'] if pd.notna(row['gap_kw']) else gap
         row['threshold'] = np.nan if threshold is None else float(threshold)
-        row['within_threshold'] = pd.NA if threshold is None or pd.isna(tested) else bool(abs(tested) <= threshold)
+        row['within_threshold'] = pd.NA if threshold is None or pd.isna(tested) else bool(tested <= threshold)
         rows.append(row)
     out = pd.DataFrame(rows, columns=AGREEMENT_COLUMNS)
     out['within_threshold'] = out['within_threshold'].astype('boolean')

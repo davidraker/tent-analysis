@@ -113,24 +113,123 @@ def test_signal_traffic_counts(source, traffic):
     assert from_vertices.loc[1, 'delivery_start'] == traffic.loc[1, 'delivery_start'], 'the auction signals start at interval 0'
 
 
-def test_link_agreement_restates_the_received_sign(source):
+def test_link_agreement_uses_the_balance_points_tent_way(source):
+    """The consensus market's signals mark their balance points (archive schema 6): this node proposed -50 kW, the
+    neighbor 48 kW from its side, -48 kW from here. TENT's test is the relative distance between the two points,
+    |2| / 49 = 0.0408 with no price term (both points at 0.03 $/kWh), against the neighbor's threshold."""
     signals = load_signals(source, history=True)
     mine = signals[signals['market_series'] == SERIES]
-    out = link_agreement(mine, thresholds={'CoR': 2.5})
+    assert mine['balance_point'].dtype.name == 'boolean' and mine['balance_point'].notna().all()
+    assert mine.groupby(['signal_id', 'interval_start'])['balance_point'].sum().eq(1).all(), 'one point per curve'
+    marked = mine[mine['balance_point'].astype(bool)]
+    assert set(marked.loc[marked['direction'] == 'sent', 'quantity']) == {-50.0}
+    assert set(marked.loc[marked['direction'] == 'received', 'quantity']) == {48.0}, 'as the neighbor stated it'
+    out = link_agreement(mine, thresholds={'CoR': 0.05})
     assert list(out.columns) == AGREEMENT_COLUMNS and len(out) == 4
     assert (out['sent_sequence'] == 1).all() and (out['received_sequence'] == 1).all(), \
         'the last signal each way with curves: the acknowledgement (sequence 2) repeated them and has none archived'
+    assert (out['rule'] == 'balance_point').all()
+    assert out['sent_balance_kw'].eq(-50.0).all() and out['received_balance_kw'].eq(-48.0).all(), 'restated from here'
+    assert out['balance_gap_kw'].eq(-2.0).all()
+    assert out['balance_distance'].round(6).eq(round(2.0 / 49.0, 6)).all()
+    assert out['within_threshold'].all() and (out['threshold'] == 0.05).all()
+    assert not link_agreement(mine, thresholds={'CoR': 0.02})['within_threshold'].any()
+    assert link_agreement(mine)['within_threshold'].isna().all(), 'no threshold, no verdict'
+    # The other readings are still there, whatever the rule.
     assert out['max_curve_gap'].round(6).eq(2.0).all(), 'sent -50 against received +48 restated to -48; 30 against 30'
-    assert out['within_threshold'].all() and (out['threshold'] == 2.5).all()
     assert out['gap_kw'].isna().all() and out['price'].isna().all(), 'no cleared price given'
-    assert not link_agreement(mine, thresholds={'CoR': 1.0})['within_threshold'].any()
-    assert link_agreement(mine)['within_threshold'].isna().all()
     prices = pd.DataFrame({'source': source.label, 'market_id': mine['market_id'].iloc[0],
                            'interval_start': sorted(mine['interval_start'].unique()), 'price': 0.06})
-    priced = link_agreement(mine, thresholds={'CoR': 0.5}, prices=prices)
+    priced = link_agreement(mine, thresholds={'CoR': 0.05}, prices=prices)
+    assert (priced['rule'] == 'balance_point').all(), 'a marked balance point outranks the price'
     assert priced['sent_kw'].round(6).eq(-10.0).all() and priced['received_kw'].round(6).eq(-9.0).all()
-    assert priced['gap_kw'].round(6).eq(-1.0).all() and not priced['within_threshold'].any(), 'the gap at the price is tested'
+    assert priced['gap_kw'].round(6).eq(-1.0).all() and priced['within_threshold'].all()
     assert source.catalog.convergence_thresholds.keys() >= {'CoR'}
+
+
+def test_link_agreement_falls_back_where_no_balance_point_is_marked(source):
+    """The auction market's signals in the same archive carry no balance point: those rows take the cleared-price rule
+    with prices and the curve-gap rule without, as every row of an archive before schema version 6 does."""
+    signals = load_signals(source, history=True)
+    out = link_agreement(signals, thresholds={'CoR': 6.0})
+    by_rule = out.groupby('market_series')['rule'].unique().map(list).to_dict()
+    assert by_rule == {SERIES: ['balance_point'], 'Day-Ahead_Auction': ['curve_gap']}
+    auction = out[out['market_series'] != SERIES]
+    assert auction['sent_balance_kw'].isna().all() and auction['balance_distance'].isna().all()
+    assert auction['max_curve_gap'].round(6).eq(6.0).all() and auction['within_threshold'].all(), '|30 - 36| = 6 kW'
+    assert not link_agreement(signals, thresholds={'CoR': 5.0}).loc[out['market_series'] != SERIES, 'within_threshold'].any()
+    prices = pd.DataFrame({'source': source.label, 'market_id': auction['market_id'].iloc[0],
+                           'interval_start': sorted(auction['interval_start'].unique()), 'price': 0.06})
+    priced = link_agreement(signals, thresholds={'CoR': 3.0}, prices=prices)
+    priced_auction = priced[priced['market_series'] != SERIES]
+    assert (priced_auction['rule'] == 'cleared_price').all()
+    assert priced_auction['sent_kw'].round(6).eq(-10.0).all() and priced_auction['received_kw'].round(6).eq(-4.5).all()
+    assert priced_auction['gap_kw'].round(6).eq(-5.5).all() and not priced_auction['within_threshold'].any()
+    assert (priced.loc[priced['market_series'] == SERIES, 'rule'] == 'balance_point').all()
+
+
+def test_older_archives_without_the_balance_point_column_still_load(source, tmp_path):
+    """An archive of schema version 3 to 5 has no sd_curve.balance_point_record: the loaders say so with a null flag
+    and link_agreement applies the fallback rules."""
+    import shutil
+    import sqlalchemy as sa
+    from tent_analysis.data import Source, load_curves
+    path = tmp_path / 'older.sqlite'
+    shutil.copy(source.url.removeprefix('sqlite:///'), path)
+    engine = sa.create_engine(f'sqlite:///{path}')
+    with engine.begin() as connection:
+        connection.execute(sa.text('ALTER TABLE sd_curve DROP COLUMN balance_point_record'))
+        connection.execute(sa.text("UPDATE archive_schema SET version = 5 WHERE application = 'TENT'"))
+    older = Source(f'sqlite:///{path}', label='older')
+    assert older.reader.schema_version == 5
+    signals = load_signals(older, history=True)
+    assert len(signals) == len(load_signals(source, history=True)) and signals['balance_point'].isna().all()
+    assert signals['balance_point'].dtype.name == 'boolean'
+    curves = load_curves(older)
+    assert not curves.empty and curves['balance_point'].isna().all()
+    out = link_agreement(signals[signals['market_series'] == SERIES], thresholds={'CoR': 2.5})
+    assert (out['rule'] == 'curve_gap').all() and out['within_threshold'].all()
+    assert out['sent_balance_kw'].isna().all() and out['balance_distance'].isna().all()
+    # The current archive, by contrast, says which vertex is the point on every signal curve, and False elsewhere.
+    current = load_curves(source)
+    assert current['balance_point'].notna().all()
+    assert not current.loc[current['direction'].isna(), 'balance_point'].astype(bool).any(), 'system curves, active vertices'
+
+
+def test_balance_point_distance_is_tents_relative_distance():
+    """TransactiveSignal._relative_distance: quantity term relative to the average quantity (absolute at zero), price
+    term only with flexibility on both sides at finite, non-zero prices, and never for a quantity-only market."""
+    from tent_analysis.analysis import balance_point_distance
+    sent = pd.Series({'price': 0.05, 'quantity': -100.0})
+    received = pd.Series({'price': 0.05, 'quantity': -98.0})
+    assert balance_point_distance(sent, received, flexible=True) == pytest.approx(2.0 / 99.0)
+    priced = pd.Series({'price': 0.06, 'quantity': -98.0})
+    expected = (2.0 / 99.0) ** 2 + (0.01 / 0.055) ** 2
+    assert balance_point_distance(sent, priced, flexible=True) == pytest.approx(expected ** 0.5)
+    assert balance_point_distance(sent, priced, flexible=False) == pytest.approx(2.0 / 99.0), 'an inelastic side: quantity only'
+    assert balance_point_distance(sent, priced, flexible=True, quantity_only=True) == pytest.approx(2.0 / 99.0)
+    inelastic = pd.Series({'price': float('inf'), 'quantity': -98.0})
+    assert balance_point_distance(sent, inelastic, flexible=True) == pytest.approx(2.0 / 99.0), 'an infinite price has no term'
+    opposite = pd.Series({'price': 0.05, 'quantity': -0.25})
+    assert balance_point_distance(opposite, pd.Series({'price': 0.05, 'quantity': 0.25}), flexible=False) == pytest.approx(0.5), \
+        'exact opposites average to zero: the absolute gap against a 1 kW scale'
+    # A matching_consensus market in link_agreement leaves the price term out.
+    t = pd.Timestamp('2017-07-01T00:00Z')
+    rows = []
+    for direction, signal_id, points in (('sent', 's1', [(0.03, -60.0, False), (0.05, -50.0, True), (0.09, 30.0, False)]),
+                                        ('received', 'r1', [(0.03, 55.0, False), (0.07, 50.0, True), (0.09, -30.0, False)])):
+        for record, (price, quantity, flag) in enumerate(points):
+            rows.append({'source': 's', 'actor': 'a', 'run_id': 'r', 'signal_id': signal_id, 'direction': direction,
+                         'signal_time': t, 'sequence': 1, 'neighbor_name': 'N', 'market_id': 'm', 'market_name': 'M',
+                         'market_series': 'S', 'curve_id': signal_id + 'c', 'record_time': t, 'interval_start': t,
+                         'record': record, 'price': price, 'quantity': quantity, 'balance_point': flag})
+    frame = pd.DataFrame(rows)
+    frame['balance_point'] = frame['balance_point'].astype('boolean')
+    with_price = link_agreement(frame, thresholds={'N': 0.1}).iloc[0]
+    quantity_only = link_agreement(frame, thresholds={'N': 0.1}, market_types={'m': 'matching_consensus'}).iloc[0]
+    assert with_price['balance_distance'] == pytest.approx(((0.02 / 0.06) ** 2) ** 0.5) and not with_price['within_threshold']
+    assert quantity_only['balance_distance'] == 0.0 and quantity_only['within_threshold']
+    assert with_price['sent_balance_kw'] == -50.0 and with_price['received_balance_kw'] == -50.0
 
 
 def test_summary_and_compare_runs(outcomes, traffic):

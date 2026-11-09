@@ -57,11 +57,20 @@ Layers: `data` (sources, catalog, tidy loaders over TENT's `ArchiveReader`), `an
 out), `viz` (pure Plotly figure builders, one theme), `app` (dashboard logic without Streamlit, and the Streamlit
 script), `report` (HTML assembly, static images, the CLI).
 
-    from tent_analysis.data import Source, load_measurements
-    from tent_analysis.analysis import cleared_prices, scheduled_power, energy_cost
+    from tent_analysis.data import Source, load_measurements, load_orders
+    from tent_analysis.analysis import cleared_prices, scheduled_power, energy_cost, fill_cost
     source = Source('sqlite:///archive.sqlite')
     latest = load_measurements(source, types=['MarginalPrice', 'ScheduledPower'])
-    cost = energy_cost(scheduled_power(latest), cleared_prices(latest))
+    cost = energy_cost(scheduled_power(latest), cleared_prices(latest))   # scheduled power x marginal price
+    fills = fill_cost(load_orders(source, history=True))                   # a book market's legs at their own prices
+
+`energy_cost` is scheduled power times the market's marginal price, which is the money of a market that clears at one
+price. A book market (`MatchingEngine`, `MatchingAuction`, `MatchingConsensusMarket`) fills each leg at the resting
+order's own price, so its settlement is the fills: `fill_cost` sums, per actor, market and interval, every matched leg's
+quantity times the interval's duration times its match price, with `energy_cost`'s sign (a supply leg earns, a negative
+cost; a demand leg pays); a leg matched at an infinite price (market order against market order) is counted in `legs`
+and `unpriced_legs` but carries no money. Both feed `aggregate_cost`. The Costs page and report show the fill-based
+figures ("Fill cost by hour", ...) next to the price-times-power ones whenever the archive holds an order book.
 
 Conventions the frames follow:
 
@@ -75,6 +84,9 @@ Conventions the frames follow:
   remote sign; `signal_pairs` and the signal comparison figure restate it from the local side (`from_local_side`)
   before comparing it with the sent signal. `load_signals` returns the signals that have archived curves;
   `load_signal_headers` returns every signal as one row (direction, time, protocol header, market).
+- A signal's vertices are numbered (`record`) in price order, so record 0 is the cheapest vertex, not the balance
+  point; the vertex a signal proposes as the exchange is the one whose `balance_point` flag is true (archive schema
+  version 6 on; null in older archives, which did not record it).
 - A curve is identified by its `curve_id`; `load_curves` carries `measurement_type` and, for signal vertices,
   `direction`. `curve_at` returns one owner's curve for one interval and raises when the owner has several distinct
   curves there (a neighbor's sent and received signals); `single_curve` keeps the newest version per curve id and lets
@@ -118,12 +130,22 @@ and the transactive signals with their acknowledgement header.
   signal's header but a curve only when its content differs from the last one archived for that neighbor, market and
   interval, so acknowledgements and repeated signals have no vertex rows and are missing from `load_signals`.
 - `link_agreement`: per market, neighbor and interval, the last sent and last received signal compared from the local
-  side. The archive numbers a curve's vertices in price order and does not mark the balance point a signal carried,
-  so with `prices` (a MarginalPrice frame, matched by market) the curves are read at the market's cleared price
-  (`sent_kw`, `received_kw`, `gap_kw`), and `max_curve_gap` is the largest quantity gap between them over the union of
-  their breakpoints. This is not TENT's convergence test, which compares balance points whose price allows for losses
-  and demand charges on the link: on a steep upstream curve the gap at the local price can be large while the market
-  recorded consensus. `thresholds` (`Catalog.convergence_thresholds`) gives `within_threshold`.
+  side, under one of three rules named in the `rule` column. From archive schema version 6 on (TENT of 8 November
+  2026) a signal curve's row records which vertex is its balance point, the exchange the signal proposes
+  (`sd_curve.balance_point_record`; `load_signals` and `load_curves` expose it as the nullable boolean `balance_point`
+  flag, null throughout an older archive). Where both signals mark one, the rule is `balance_point`, TENT's own
+  convergence test: `sent_balance_kw` is what this node proposed, `received_balance_kw` what the neighbor proposed
+  restated from the local side, `balance_gap_kw` their difference and `balance_distance` TENT's relative distance
+  between the two points (`balance_point_distance`: quantity, and price when both curves have flexibility, unless the
+  market agrees on the quantity alone, a `matching_consensus` market named through `market_types`, from
+  `Catalog.markets`), which `within_threshold` tests against the neighbor's convergence threshold (a dimensionless
+  fraction, `Catalog.convergence_thresholds`, as `Neighbor.check_for_convergence` does). Where a balance point is
+  missing (an older archive, a signal with nothing scheduled) the rule is `cleared_price` when `prices` are given (a
+  MarginalPrice frame, matched by market): the curves are read at the market's cleared price (`sent_kw`,
+  `received_kw`, `gap_kw`), a stand-in, since the balance-point price allows for losses and demand charges on the link
+  and on a steep upstream curve the gap at the local price can be large while the market recorded consensus; and
+  `curve_gap` otherwise, `max_curve_gap`, the largest quantity gap between the curves over the union of their
+  breakpoints. The cleared-price columns and `max_curve_gap` are filled whatever the rule.
 - `consensus_summary`: per source, actor and series, the markets closed in consensus and without, `final_consensus`,
   mean passes, median time to consensus (and in minutes), median fraction of the window, signals sent and received.
 

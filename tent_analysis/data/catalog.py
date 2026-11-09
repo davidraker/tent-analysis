@@ -91,8 +91,9 @@ class Catalog:
 
     @cached_property
     def convergence_thresholds(self) -> dict[str, float]:
-        """Neighbor name -> its convergence threshold [kW], the tolerance within which a neighbor's signal counts as
-        agreeing with this node's (Neighbor.convergence_threshold), for signal_pairs and link_agreement."""
+        """Neighbor name -> its convergence threshold (Neighbor.convergence_threshold, a dimensionless fraction: the
+        relative distance between the two sides' balance points below which the negotiation with that neighbor counts
+        as converged), for link_agreement and signal_pairs."""
         if not self.reader.has_table('neighbor'):
             return {}
         neighbor, component = self.reader.tables['neighbor'], self.reader.tables['component']

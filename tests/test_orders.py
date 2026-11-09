@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tent_analysis.analysis import STATUS_ORDER, matched_quantities, order_book, order_counts
+from tent_analysis.analysis import STATUS_ORDER, aggregate_cost, fill_cost, matched_quantities, order_book, order_counts
+from tent_analysis.analysis.orders import FILL_COST_COLUMNS
 from tent_analysis.app.dashboard import pages_for
 from tent_analysis.app.views import Selection, Views
 from tent_analysis.data import load_curves, load_orders
@@ -61,6 +62,46 @@ def test_order_book_and_matches(source):
     assert order_book(history.iloc[0:0]).empty and order_counts(book.iloc[0:0]).empty and matched_quantities(book.iloc[0:0]).empty
 
 
+def test_fill_cost_settles_each_leg_at_its_own_price(source):
+    """The money of a book market is its fills: every matched leg at its match price, per actor and interval, with the
+    sign convention of energy_cost (a supply leg earns, a negative cost; a demand leg pays)."""
+    history = load_orders(source, history=True)
+    assert (history['interval_end'] - history['interval_start'] == pd.Timedelta(hours=1)).all()
+    cost = fill_cost(history)
+    assert list(cost.columns) == FILL_COST_COLUMNS and cost['interval_start'].nunique() == 24
+    assert cost['legs'].sum() == 96 and (cost['unpriced_legs'] == 0).all() and set(cost['market_series']) == {'Matching_Market'}
+    latest = order_book(history).sort_values('record_time').drop_duplicates('order_id', keep='last')
+    legs = latest[latest['status'] == 'MATCHED']
+    # Leg by leg: -quantity [kW] x 1 h x match price; the same from the latest-version frame as from the history.
+    expected = (legs.assign(cost=-legs['quantity'] * legs['price']).groupby(['actor_name', 'interval_start'])['cost'].sum())
+    got = cost.set_index(['owner_name', 'interval_start'])['cost']
+    assert np.allclose(got.sort_index(), expected.sort_index())
+    assert np.allclose(fill_cost(load_orders(source))['cost'], cost['cost'])
+    sellers = set(legs.loc[legs['side'] == 'SUPPLY', 'actor_name'])
+    assert (cost.loc[cost['owner_name'].isin(sellers), 'cost'] < 0).all(), 'supply legs earn'
+    assert (cost.loc[~cost['owner_name'].isin(sellers), 'cost'] > 0).all(), 'demand legs pay'
+    assert np.allclose(cost.groupby('interval_start')['cost'].sum(), 0.0), 'every leg at one price: buyers pay what sellers earn'
+    assert np.allclose(cost.groupby('interval_start')['energy_kwh'].sum(), 0.0)
+    assert (cost.groupby('interval_start')['energy_kwh'].apply(lambda s: s.abs().sum()) == 240.0).all(), '120 kW matched each way'
+    by_hour = aggregate_cost(cost, 'hour')
+    assert set(by_hour['owner_name']) == set(cost['owner_name']) and by_hour['hour'].nunique() == 24
+    assert fill_cost(history.iloc[0:0]).empty and list(fill_cost(history.iloc[0:0]).columns) == FILL_COST_COLUMNS
+    assert fill_cost(history[history['status'] == 'NEW']).empty, 'no fills, no money'
+
+
+def test_fill_cost_leaves_unpriced_legs_out_of_the_money():
+    t = pd.Timestamp('2017-07-01T00:00Z')
+    legs = pd.DataFrame({'source': 's', 'actor': 'a', 'run_id': 'r', 'order_id': ['1', '2', '3', '4'], 'record_time': t,
+                         'status': ['MATCHED', 'MATCHED', 'REVISED_MATCHED', 'SUPERSEDED'], 'side': ['SUPPLY', 'DEMAND', 'SUPPLY', 'SUPPLY'],
+                         'actor_name': ['gen', 'load', 'gen', 'gen'], 'buyer_name': 'b', 'seller_name': 's', 'parent_order_id': None,
+                         'market_series': 'M', 'market_name': 'M1', 'interval_start': t, 'interval_end': t + pd.Timedelta(minutes=30),
+                         'record': 0, 'price': [np.inf, np.inf, 0.05, 0.05], 'quantity': [10.0, -10.0, 30.0, 100.0], 'continuity': True})
+    out = fill_cost(legs).set_index('owner_name')
+    assert list(out.index) == ['gen', 'load'] and out.loc['gen', 'legs'] == 2 and out.loc['gen', 'unpriced_legs'] == 1
+    assert out.loc['gen', 'energy_kwh'] == 20.0 and out.loc['gen', 'cost'] == pytest.approx(-15.0 * 0.05), 'the superseded order is not a fill'
+    assert out.loc['load', 'energy_kwh'] == -5.0 and out.loc['load', 'cost'] == 0.0 and out.loc['load', 'unpriced_legs'] == 1
+
+
 def test_infinite_match_prices_are_not_averaged():
     t = pd.Timestamp('2017-07-01T00:00Z')
     legs = pd.DataFrame({'source': 's', 'actor': 'a', 'run_id': 'r', 'order_id': ['1', '2', '3'], 'record_time': t,
@@ -76,6 +117,12 @@ def test_infinite_match_prices_are_not_averaged():
 def test_order_views_exist_only_with_orders(source, pacific, historian):
     figures = Views(source, Selection()).orders()
     assert set(figures) == {'Orders by status', 'Matched quantity'}
+    costs = Views(source, Selection()).costs()
+    assert 'Fill cost by hour' in costs and 'Cost by hour' in costs, 'the fills of the book market next to price x power'
+    assert costs['Fill cost by hour'].layout.title.text.startswith('Cost of book-market fills by hour')
+    assert 'Fill cost by hour' not in Views(pacific, Selection()).costs(), 'no order book, no fill cost'
+    assert 'Fill cost by hour' not in Views(source, Selection(series=['Day-Ahead_Auction'])).costs()
+    assert 'Fill cost by hour' in standard_figures(source)
     bars = figures['Orders by status']
     assert {t.name for t in bars.data} == {'MATCHED', 'SUPERSEDED', 'REVISED_STANDING_ORDER'} and bars.layout.barmode == 'stack'
     quantity = figures['Matched quantity']

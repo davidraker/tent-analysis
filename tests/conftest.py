@@ -162,17 +162,21 @@ def build_archive(url: str, actor: str, price_scale: float = 1.0, seed: int = 1,
         # neighbor's 1, revised False) sent after the negotiation deadline, from MarketLead. Intervals 4 to 7, so the
         # auction market's signals above stay the only ones for the first four intervals. TENT archives the
         # acknowledgement's header but not its curves, whose content it already holds for the same lineage and interval.
+        # Each signal marks its balance point, the exchange it proposes (archived as sd_curve.balance_point_record from
+        # schema version 6 on): this node proposes -50 kW (its first vertex), the neighbor proposes 48 kW from its side
+        # (its first vertex), which is -48 kW from here; the auction market's signals above carry no balance point.
         exchange = [(SignalDirection.sent, negotiation + timedelta(seconds=5), dict(sequence=1, in_reply_to=None, revised=True),
-                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)]),
+                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)], -50.0),
                     (SignalDirection.received, negotiation + timedelta(seconds=40), dict(sequence=1, in_reply_to=1, revised=True),
-                     [Vertex(price=0.03, quantity=48.0), Vertex(price=0.09, quantity=-30.0)]),
+                     [Vertex(price=0.03, quantity=48.0), Vertex(price=0.09, quantity=-30.0)], 48.0),
                     (SignalDirection.sent, lead + timedelta(seconds=20), dict(sequence=2, in_reply_to=1, revised=False),
-                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)])]
-        for direction, moment, header, vertices in exchange:
+                     [Vertex(price=0.03, quantity=-50.0), Vertex(price=0.09, quantity=30.0)], -50.0)]
+        for direction, moment, header, vertices, balance in exchange:
             signal = TransactiveSignal(market=consensus_market, neighbor=neighbor, direction=direction, signal_time=moment,
                                        **header)
             for ti in consensus_market.time_intervals[4:8]:
                 signal.update(ti, [Vertex(price=v.price, quantity=v.quantity) for v in vertices], archive=False)
+            signal.mark_balance_points_at_quantities({ti: balance for ti in consensus_market.time_intervals[4:8]})
             with patch.object(Timer, 'now', return_value=moment):
                 signal.archive()
     if tn.meter_points:

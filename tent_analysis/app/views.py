@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from tent_analysis.analysis import (aggregate_cost, bid_position, cleared_prices, compare_runs, consensus,
-                                    consensus_outcomes, consensus_summary, convergence, energy_cost, horizon_matrix,
+                                    consensus_outcomes, consensus_summary, convergence, energy_cost, fill_cost, horizon_matrix,
                                     matched_quantities, net_curve, net_power, order_book, order_counts, price_revisions,
                                     scheduled_power, signal_pairs, signal_traffic, single_curve, state_segments)
 from tent_analysis.data import (Source, default_label, load_curves, load_historian_topics, load_measurements,
@@ -256,6 +256,9 @@ class Views:
         return {'Schedule position': bid_position_figure(positioned, theme=self.theme)}
 
     def costs(self) -> dict[str, go.Figure]:
+        """Energy cost as scheduled power times the market's cleared price ('Cost by ...'), and, when the archive holds
+        an order book, the cost of a book market's fills ('Fill cost by ...': each matched leg at its own price, the
+        settlement of a book market, see analysis.orders.fill_cost)."""
         latest = self.measurements(['MarginalPrice', 'ScheduledPower'])
         cost = energy_cost(scheduled_power(latest), cleared_prices(latest))
         figures = {}
@@ -263,12 +266,20 @@ class Views:
             agg = aggregate_cost(cost, by)
             if not agg.empty and agg[by].nunique() > 1:
                 figures[f'Cost by {by}'] = cost_bars(agg, by, colors=self.colors, theme=self.theme)
+        fills = fill_cost(self._selected_orders())
+        if self.sel.owners:
+            fills = fills[fills['owner_name'].isin(self.sel.owners)]
+        for by in ('hour', 'weekday', 'month', 'day'):
+            agg = aggregate_cost(fills, by)
+            if not agg.empty and agg[by].nunique() > 1:
+                figures[f'Fill cost by {by}'] = cost_bars(agg, by, colors=self.colors, theme=self.theme,
+                                                          title=f'Cost of book-market fills by {by} (legs at their match prices)')
         return figures
 
-    def orders(self) -> dict[str, go.Figure]:
-        """The order book of MatchingEngine markets: present only when the archive holds orders."""
+    def _selected_orders(self) -> pd.DataFrame:
+        """Every version of every order of the selected series and intervals; empty without an order book."""
         if self.source.catalog.order_count == 0:
-            return {}
+            return load_orders(self.source)
         orders = load_orders(self.source, history=True)
         if self.sel.series:
             orders = orders[orders['market_series'].isin(self.sel.series)]
@@ -276,6 +287,11 @@ class Views:
             orders = orders[orders['interval_start'] >= self.sel.start]
         if self.sel.end is not None:
             orders = orders[orders['interval_start'] < self.sel.end]
+        return orders
+
+    def orders(self) -> dict[str, go.Figure]:
+        """The order book of MatchingEngine markets: present only when the archive holds orders."""
+        orders = self._selected_orders()
         book = order_book(orders)
         if book.empty:
             return {}

@@ -74,7 +74,25 @@ def load_measurements(source: Source, types: Iterable = None, owners: Sequence[s
 
 CURVE_COLUMNS = ['source', 'actor', 'run_id', 'curve_id', 'record_time', 'owner_id', 'owner_name', 'owner_type',
                  'measurement_id', 'measurement_type', 'direction', 'market_series', 'market_id', 'interval_id',
-                 'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty']
+                 'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity', 'uncertainty', 'balance_point']
+
+
+def _balance_point_flag(curve: dict, vertex: dict):
+    """Whether this vertex is the curve's balance point: the exchange a transactive signal proposes to its neighbor,
+    recorded as sd_curve.balance_point_record (the vertex's record number) from archive schema version 6 on. False for
+    the other vertices and for every curve without one (a system curve, active vertices, a signal with nothing
+    scheduled); null (pd.NA) when the archive predates the column and cannot say."""
+    if 'balance_point_record' not in curve:
+        return pd.NA
+    record = curve['balance_point_record']
+    return record is not None and not pd.isna(record) and int(record) == int(vertex['record'])
+
+
+def _vertex_record(curve: dict, vertex: dict) -> dict:
+    return {'curve_id': curve['id'], 'record_time': curve['record_time'], 'interval_id': curve['time_interval_id'],
+            'interval_start': curve['interval_start'], 'record': vertex['record'], 'price': vertex['price'],
+            'quantity': vertex['quantity'], 'cost': vertex['cost'], 'continuity': vertex['continuity'],
+            'uncertainty': vertex['uncertainty'], 'balance_point': _balance_point_flag(curve, vertex)}
 
 
 def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = None, history: bool = False,
@@ -82,7 +100,9 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
     """One row per vertex, with its curve version and owner. `types` default to every vertex-type measurement except
     the order book (orders are curves too, but hundreds per market; load_orders returns them with their status); a
     filter that matches no measurement header yields an empty frame. `direction` is 'sent' or 'received' for the
-    vertices of a transactive signal (quantities as archived, see load_signals) and null for every other curve."""
+    vertices of a transactive signal (quantities as archived, see load_signals) and null for every other curve.
+    `balance_point` (nullable boolean) is True on the vertex a signal proposes as the exchange with its neighbor, False
+    elsewhere, and null throughout an archive written before schema version 6, which did not record it."""
     catalog = source.catalog
     headers = catalog.measurements
     filtered = types is not None or owners is not None
@@ -97,18 +117,13 @@ def load_curves(source: Source, types: Iterable = None, owners: Sequence[str] = 
         return pd.DataFrame(columns=CURVE_COLUMNS)
     curves = source.reader.curves(measurement_ids=list(headers['measurement_id']) if filtered else None,
                                   latest_only=not history, as_of=_utc(as_of, 'as_of'))
-    records = []
-    for curve in curves:
-        for v in curve['vertices']:
-            records.append({'curve_id': curve['id'], 'record_time': curve['record_time'],
-                            'owner_id': curve['owner_id'], 'measurement_id': curve['measurement_id'],
-                            'market_id': curve['market_id'], 'interval_id': curve['time_interval_id'],
-                            'interval_start': curve['interval_start'], 'record': v['record'], 'price': v['price'],
-                            'quantity': v['quantity'], 'cost': v['cost'], 'continuity': v['continuity'],
-                            'uncertainty': v['uncertainty']})
+    records = [_vertex_record(curve, v) | {'owner_id': curve['owner_id'], 'measurement_id': curve['measurement_id'],
+                                           'market_id': curve['market_id']}
+               for curve in curves for v in curve['vertices']]
     if not records:
         return pd.DataFrame(columns=CURVE_COLUMNS)
     df = pd.DataFrame(records)
+    df['balance_point'] = df['balance_point'].astype('boolean')
     df = df.merge(headers[['measurement_id', 'owner_name', 'owner_type', 'measurement_type', 'run_id']],
                   on='measurement_id', how='left')
     markets = catalog.markets[['id', 'series_name']].rename(columns={'id': 'market_id', 'series_name': 'market_series'})
@@ -196,7 +211,7 @@ def _decode_historian_value(text):
 SIGNAL_COLUMNS = ['source', 'actor', 'run_id', 'signal_id', 'direction', 'signal_time', 'sequence', 'in_reply_to',
                   'revised', 'neighbor_id', 'neighbor_name', 'market_id', 'market_name', 'market_series', 'curve_id',
                   'record_time', 'interval_id', 'interval_start', 'record', 'price', 'quantity', 'cost', 'continuity',
-                  'uncertainty']
+                  'uncertainty', 'balance_point']
 PROTOCOL_COLUMNS = ('sequence', 'in_reply_to', 'revised')  # acknowledgement protocol header, archive schema 2 onwards
 
 
@@ -256,7 +271,10 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
     whose content is unchanged from the sender's previous one (an acknowledgement; null in archives written before the
     protocol, which means revised). Only signals with archived curves appear (see load_signal_headers). Quantities are
     as archived: a received signal states the exchange from the remote side, so its sign is opposite to the local
-    convention (analysis.curves.from_local_side restates it)."""
+    convention (analysis.curves.from_local_side restates it). `balance_point` (nullable boolean) marks the vertex the
+    signal proposes as the exchange, the one the wire's balance_point named (sd_curve.balance_point_record, archive
+    schema version 6 on): False on the other vertices and on a signal with nothing scheduled, null throughout an older
+    archive, which did not record it; vertices are numbered in price order, so record 0 is not the balance point."""
     reader = source.reader
     if not source.reader.has_table('transactive_signal'):
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
@@ -265,17 +283,12 @@ def load_signals(source: Source, neighbors: Sequence[str] = None, history: bool 
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
     headers = headers.drop(columns=['market_name', 'market_series', 'delivery_start', 'source', 'actor'])
     curves = reader.curves(measurement_ids=list(headers['signal_id']), latest_only=not history)
-    records = []
-    for curve in curves:
-        for v in curve['vertices']:
-            records.append({'signal_id': curve['measurement_id'], 'curve_id': curve['id'],
-                            'record_time': curve['record_time'], 'interval_id': curve['time_interval_id'],
-                            'interval_start': curve['interval_start'], 'record': v['record'], 'price': v['price'],
-                            'quantity': v['quantity'], 'cost': v['cost'], 'continuity': v['continuity'],
-                            'uncertainty': v['uncertainty']})
+    records = [_vertex_record(curve, v) | {'signal_id': curve['measurement_id']}
+               for curve in curves for v in curve['vertices']]
     if not records:
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
     df = pd.DataFrame(records).merge(headers, on='signal_id', how='left')
+    df['balance_point'] = df['balance_point'].astype('boolean')
     catalog = source.catalog
     markets = catalog.markets[['id', 'name', 'series_name']].rename(
         columns={'id': 'market_id', 'name': 'market_name', 'series_name': 'market_series'})
@@ -292,13 +305,14 @@ IN_CHUNK = 500
 
 ORDER_COLUMNS = ['source', 'actor', 'run_id', 'order_id', 'record_time', 'status', 'side', 'actor_name', 'buyer_name',
                  'seller_name', 'parent_order_id', 'time_stamp', 'expire_by', 'market_id', 'market_name', 'market_series',
-                 'interval_id', 'interval_start', 'record', 'price', 'quantity', 'continuity']
+                 'interval_id', 'interval_start', 'interval_end', 'record', 'price', 'quantity', 'continuity']
 
 
 def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
     """
     The order book of every MatchingEngine market: one row per order vertex and version, with the order's status, side
-    (supply or demand), actor, buyer and seller, parent order, and delivery interval. An order is archived each time its
+    (supply or demand), actor, buyer and seller, parent order, and delivery interval (start and end). An order is archived
+    each time its
     state changes (submitted, matched, superseded, left standing, cancelled, expired); with history=False only the
     newest version of each order id is returned. A matched leg carries one vertex: the matched quantity at the match
     price. Empty without an order table.
@@ -312,7 +326,8 @@ def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
     statement = (select(order.c.id.label('order_id'), order.c.record_time, order.c.status, order.c.supply_or_demand.label('side'),
                         actor.c.name.label('actor_name'), buyer.c.name.label('buyer_name'), seller.c.name.label('seller_name'),
                         order.c.parent_order_id, order.c.time_stamp, order.c.expire_by, ti.c.market_id,
-                        sd.c.time_interval_id.label('interval_id'), ti.c.start_time.label('interval_start'))
+                        sd.c.time_interval_id.label('interval_id'), ti.c.start_time.label('interval_start'),
+                        ti.c.duration.label('interval_duration'))
                  .join(sd, (sd.c.id == order.c.id) & (sd.c.record_time == order.c.record_time))
                  .join(ti, ti.c.id == sd.c.time_interval_id)
                  .join(actor, actor.c.id == order.c.actor_id, isouter=True)
@@ -321,6 +336,7 @@ def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
     versions = pd.DataFrame(reader.execute(statement))
     if versions.empty:
         return pd.DataFrame(columns=ORDER_COLUMNS)
+    versions['interval_end'] = versions['interval_start'] + versions['interval_duration']
     if not history:
         newest = versions.groupby('order_id')['record_time'].transform('max')
         versions = versions[versions['record_time'] == newest]
@@ -344,6 +360,6 @@ def load_orders(source: Source, history: bool = False) -> pd.DataFrame:
     df = df.merge(markets, on='market_id', how='left')
     df['source'] = source.label
     df['actor'] = df['run_id'].map(catalog.run_labels)
-    df = _in_zone(df, source, ['record_time', 'time_stamp', 'expire_by', 'interval_start'])
+    df = _in_zone(df, source, ['record_time', 'time_stamp', 'expire_by', 'interval_start', 'interval_end'])
     return df[ORDER_COLUMNS].sort_values(['market_series', 'interval_start', 'record_time', 'order_id', 'record']) \
         .reset_index(drop=True)
